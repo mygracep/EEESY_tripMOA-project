@@ -46,12 +46,13 @@ async def search(req: SearchRequest):
 
     res = supabase.rpc("match_travel_chunks", {
         "query_embedding": query_vector,
+        "match_threshold": req.match_threshold,
         "match_count": req.match_count,
         "filter_city": req.city,
         "filter_category": req.category,
         "filter_travel_style": req.travel_style
     }).execute()
-
+    
     chunks = res.data
 
     if not chunks:
