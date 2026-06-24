@@ -38,7 +38,8 @@ class SearchRequest(BaseModel):
 async def search(req: SearchRequest):
     result = gemini_client.models.embed_content(
         model="gemini-embedding-2",
-        contents=req.query
+        contents=req.query,
+        config={"output_dimensionality": 768} 
     )
     query_vector = result.embeddings[0].values
 
