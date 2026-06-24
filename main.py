@@ -52,7 +52,7 @@ async def search(req: SearchRequest):
         "filter_category": req.category,
         "filter_travel_style": req.travel_style
     }).execute()
-    
+
     chunks = res.data
 
     if not chunks:
@@ -67,7 +67,7 @@ async def search(req: SearchRequest):
     )
 
     answer = response.text
-    sources = [{"link": c["link"], "text": c["text"][:100]} for c in chunks]
+    sources = [{"link": c["link"], "text": c["text"][:100], "similarity": c["similarity"]} for c in chunks]
 
     return {"answer": answer, "sources": sources}
 
