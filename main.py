@@ -263,8 +263,13 @@ async def search(req: SearchRequest):
                 unique_sources.append(source)
         result["sources"] = unique_sources
 
-    return result
+        # 블로그 모바일 URL 치환
+        for source in result["sources"]:
+            if "blog.naver.com" in source["link"] and "m.blog.naver.com" not in source["link"]:
+                source["link"] = source["link"].replace("https://blog.naver.com", "https://m.blog.naver.com")
 
+    return result
+    
 
 @app.get("/health")
 async def health():
