@@ -233,6 +233,9 @@ async def search(req: SearchRequest):
             "follow_up": [],
             "sources": []
         }
+    
+    print(f"\n=== LLM 응답 ===")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
     # 6. Places API로 좌표/사진 채우기
     if result.get("places"):
