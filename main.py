@@ -4,6 +4,7 @@ from pathlib import Path
 
 import httpx
 import asyncio
+import sys
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -109,6 +110,10 @@ null: 항공편/패스권/비용/날씨/준비물
 - 출처 2개면 [ref:1][ref:2] 연속 표기
 - sources의 id와 매핑
 - 같은 링크가 중복되면 하나만 표기.
+
+[sources 생성 기준]
+- 답변에서 [ref:N]으로 실제 인용한 청크만 포함. 최대 5개.
+- title은 반드시 [제목: ...] 에서 가져올 것. 본문 내용 절대 금지.
 
 [follow_up]
 - 2~3개, 답변에서 다루지 않은 영역 위주
@@ -234,8 +239,8 @@ async def search(req: SearchRequest):
             "sources": []
         }
     
-    print(f"\n=== LLM 응답 ===")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
+    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True, file=sys.stderr)
 
     # 6. Places API로 좌표/사진 채우기
     if result.get("places"):
