@@ -67,7 +67,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
       "id": 1,
       "title": "후기 제목",
       "channel": "네이버 카페 or 네이버 블로그",
-      "date": "YY.MM",
+      "date": "YY.MM.DD",
       "link": "https://..."
     }
   ]
