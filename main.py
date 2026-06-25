@@ -198,6 +198,10 @@ async def search(req: SearchRequest):
         }
 
     # 3. 컨텍스트 구성
+    print(f"\n=== 검색된 청크 {len(chunks)}개 ===")
+    for i, c in enumerate(chunks):
+        print(f"[{i+1}] similarity={c.get('similarity', '?'):.3f} | {c.get('title','')[:30]} | {c['text'][:60]}")
+    
     context = "\n\n".join([
         f"[id:{i+1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {c.get('title', '')}]\n{c['text']}"
         for i, c in enumerate(chunks)
@@ -261,3 +265,4 @@ async def health():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
