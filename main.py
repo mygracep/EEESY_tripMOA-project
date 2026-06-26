@@ -201,7 +201,7 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
 @app.post("/search")
 async def search(req: SearchRequest):
     # 1. 쿼리 임베딩
-    result = gemini_client.models.embed_content(
+    result = await gemini_client.aio.models.embed_content(
         model="gemini-embedding-2",
         contents=req.query,
         config={"output_dimensionality": 768}
@@ -209,14 +209,16 @@ async def search(req: SearchRequest):
     query_vector = result.embeddings[0].values
 
     # 2. 벡터 검색
-    res = supabase.rpc("match_travel_chunks", {
-        "query_embedding": query_vector,
-        "match_threshold": req.match_threshold,
-        "match_count": req.match_count,
-        "filter_city": req.city,
-        "filter_category": req.category,
-        "filter_travel_style": req.travel_style
-    }).execute()
+    res = await asyncio.to_thread(
+        lambda: supabase.rpc("match_travel_chunks", {
+            "query_embedding": query_vector,
+            "match_threshold": req.match_threshold,
+            "match_count": req.match_count,
+            "filter_city": req.city,
+            "filter_category": req.category,
+            "filter_travel_style": req.travel_style
+        }).execute()
+    )
 
     chunks = res.data
 
@@ -241,7 +243,7 @@ async def search(req: SearchRequest):
     ])
 
     # 4. Gemini 답변 생성
-    response = gemini_client.models.generate_content(
+    response = await gemini_client.aio.models.generate_content(
         model="gemini-2.5-flash",
         contents=f"{SYSTEM_PROMPT}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
         config={"thinking_config": {"thinking_budget": 0}}
@@ -317,5 +319,5 @@ async def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, workers=4)
 
