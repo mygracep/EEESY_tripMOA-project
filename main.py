@@ -125,7 +125,7 @@ class SearchRequest(BaseModel):
     city: str = None
     category: str = None
     travel_style: str = None
-    match_threshold: float = 0.7
+    match_threshold: float = 0.65
     match_count: int = 20
 
 
