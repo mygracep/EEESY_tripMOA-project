@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -41,7 +42,6 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - 후기와 관련 없는 청크는 무시하고 답변에 포함 금지.
 - 정보를 지어내거나 추측금지.
 - 후기가 부족하면 summary에 "관련 후기가 충분하지 않아요"라고 명시.
-- places는 핵심 장소만 최대 5개만 추출
 
 [말투]
 - 해요체 사용 (~이에요, ~해요, ~있어요)
@@ -60,7 +60,6 @@ JSON 외 다른 텍스트는 절대 출력금지.
     }
   ],
   "warning": [],
-  "places": null,
   "follow_up": ["후속질문1", "후속질문2"],
   "sources": [
     {
@@ -89,21 +88,6 @@ null: 순서형 동선 정보 / 감성 설명 / 단일 정보
 - 현금only/현장발권 불가
 - 날씨·계절로 헛걸음 가능성
 - 사전예약 필수
-
-[places 출력 형식]
-장소명만 뽑으세요. lat/lng/photo_url은 빈값으로 두세요.
-생성: 숙소/맛집/관광지/역/온천/쇼핑
-null: 항공편/패스권/비용/날씨/준비물
-일정 쿼리면 day에 숫자, 일반이면 day: null
-장소 없는 쿼리면 places: null
-{
-  "day": null,
-  "name": "장소명",
-  "lat": null,
-  "lng": null,
-  "photo_url": null,
-  "description": "한 줄 설명"
-}
 
 [출처 인라인 표기]
 - 문장 끝에 [ref:N] 표기
@@ -242,18 +226,31 @@ async def search(req: SearchRequest):
     print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True, file=sys.stderr)
 
-    # 6. Places API로 좌표/사진 채우기
-    if result.get("places"):
-        tasks = [get_place_details(place["name"], req.city) for place in result["places"]]
+    # 6. content에서 장소명 추출 → Places API 호출
+    place_names = []
+    for section in result.get("sections", []):
+        matches = re.findall(r'\*\*(.+?)\*\*', section.get("content", ""))
+        place_names.extend(matches)
+    place_names = list(dict.fromkeys(place_names))
+
+    places = []
+    if place_names:
+        tasks = [get_place_details(name, req.city) for name in place_names]
         details_list = await asyncio.gather(*tasks)
-        print(f"details_list: {details_list}")
-
-        for place, details in zip(result["places"], details_list):
+        for name, details in zip(place_names, details_list):
             if details:
-                place["lat"] = details["lat"]
-                place["lng"] = details["lng"]
-                place["photo_url"] = details["photo_url"]
+                places.append({
+                    "day": None,
+                    "name": name,
+                    "lat": details["lat"],
+                    "lng": details["lng"],
+                    "photo_url": details["photo_url"],
+                    "description": ""
+                })
 
+    result["places"] = places if places else None
+
+    # 7. 중복 소스 제거
     if result.get("sources"):
         seen_links = set()
         unique_sources = []
@@ -269,7 +266,6 @@ async def search(req: SearchRequest):
                 source["link"] = source["link"].replace("https://blog.naver.com", "https://m.blog.naver.com")
 
     return result
-    
 
 @app.get("/health")
 async def health():
