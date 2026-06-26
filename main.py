@@ -55,8 +55,8 @@ JSON 외 다른 텍스트는 절대 출력금지.
 
 예시)
 👉 위치 중심
-• **호텔 오크 시즈오카** → 시즈오카 시내, 상점가 근처, 도보 편리 [ref:3]
-• **유메구리 노 야도** → 석식·조식 포함, 부담 없는 가격 [ref:2]
+- **호텔 오크 시즈오카** → 시즈오카 시내, 상점가 근처, 도보 편리 [ref:3]
+- **유메구리 노 야도** → 석식·조식 포함, 부담 없는 가격 [ref:2]
 
 [출력 JSON 구조]
 {
@@ -67,13 +67,13 @@ JSON 외 다른 텍스트는 절대 출력금지.
       "title": "섹션 제목",
       "content": "장소/항목별로 줄바꿈 구분. 소제목 필요하면 👉 소제목 형식 사용. 각 항목은 • **장소명** → 핵심 특징 1~2개 형식으로 작성.\n예시)\n👉 위치 중심\n• **호텔 오크 시즈오카** → 시즈오카 시내, 상점가 근처, 도보 편리 [ref:3]\n• **유메구리 노 야도** → 석식·조식 포함, 부담 없는 가격 [ref:2]",
       "reviews": [
-      {
-        "text": "후기 원문에서 가장 생생한 문장 그대로 인용",
-        "sentiment": "positive 또는 negative",
-        "date": "YY.MM",
-        "ref": 1
-      }
-    ],
+        {
+          "text": "후기 원문에서 가장 생생한 문장 그대로 인용",
+          "sentiment": "positive 또는 negative",
+          "date": "YY.MM",
+          "ref": 1
+        }
+      ],
       "table": null
     }
   ],
@@ -98,11 +98,10 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - 추천형 쿼리(숙소/맛집/관광지 추천)는 icon을 빈값("")으로 두고, title 앞에 1️⃣ 2️⃣ 3️⃣ 순서로 붙일 것.
   마지막 상황별 추천 섹션은 icon을 💡로.
 
-
 [섹션 구성 원칙]
 - 추천형 쿼리는 쿼리의 동행인/목적/여행스타일을 먼저 파악.
 - 섹션 제목은 단순 카테고리명이 아니라 "카테고리 (이 사람에게 왜 맞는지)" 형식으로 작성.
- 예) 혼여 숙소 쿼리 →
+  예) 혼여 숙소 쿼리 →
   icon: "", title: "1️⃣ 위치+편의성 최강 (혼자 여행 기본 선택)"
   icon: "", title: "2️⃣ 가성비+혼자 최적 (잠만 자면 이거)"
   icon: "", title: "3️⃣ 힐링형 (피로 풀고 싶으면)"
@@ -120,7 +119,6 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - text는 후기 원문 말투 그대로. LLM이 재가공 금지.
 - sentiment: 긍정이면 "positive", 부정/아쉬운 점이면 "negative"
 - 장소가 없는 섹션(팁·조언 등)은 reviews: []
-
 
 [table 생성 기준]
 생성: 비교 대상 2개 이상 + 같은 기준으로 비교 가능 + 유저가 선택해야 하는 상황
@@ -174,7 +172,6 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
             }
         )
         data = search_res.json()
-    
 
         if not data.get("places"):
             return None
@@ -183,18 +180,18 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
         lat = place["location"]["latitude"]
         lng = place["location"]["longitude"]
 
-        photo_url = None
+        photo_urls = []
         if place.get("photos"):
-            photo_name = place["photos"][0]["name"]
-            photo_url = (
-                f"https://places.googleapis.com/v1/{photo_name}/media"
-                f"?maxWidthPx=800&key={GOOGLE_PLACES_API_KEY}"
-            )
+            for photo in place["photos"][:3]:
+                photo_urls.append(
+                    f"https://places.googleapis.com/v1/{photo['name']}/media"
+                    f"?maxWidthPx=800&key={GOOGLE_PLACES_API_KEY}"
+                )
 
         return {
             "lat": lat,
             "lng": lng,
-            "photo_url": photo_url
+            "photo_urls": photo_urls
         }
 
 
@@ -236,7 +233,7 @@ async def search(req: SearchRequest):
     print(f"\n=== 검색된 청크 {len(chunks)}개 ===")
     for i, c in enumerate(chunks):
         print(f"[{i+1}] similarity={c.get('similarity', '?'):.3f} | {c.get('title','')[:30]} | {c['text'][:60]}")
-    
+
     context = "\n\n".join([
         f"[id:{i+1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {c.get('title', '')}]\n{c['text']}"
         for i, c in enumerate(chunks)
@@ -268,16 +265,16 @@ async def search(req: SearchRequest):
             "follow_up": [],
             "sources": []
         }
-    
+
     print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True, file=sys.stderr)
 
-    # 6. content에서 장소명 추출 → Places API 호출
+    # 6. content에서 장소명 추출 → Places API 호출 (최대 5개)
     place_names = []
     for section in result.get("sections", []):
         matches = re.findall(r'\*\*(.+?)\*\*', section.get("content", ""))
         place_names.extend(matches)
-    place_names = list(dict.fromkeys(place_names))
+    place_names = list(dict.fromkeys(place_names))[:5]
 
     places = []
     if place_names:
@@ -290,13 +287,13 @@ async def search(req: SearchRequest):
                     "name": name,
                     "lat": details["lat"],
                     "lng": details["lng"],
-                    "photo_url": details["photo_url"],
+                    "photo_urls": details["photo_urls"],
                     "description": ""
                 })
 
     result["places"] = places if places else None
 
-    # 7. 중복 소스 제거
+    # 7. 중복 소스 제거 + 모바일 URL 치환
     if result.get("sources"):
         seen_links = set()
         unique_sources = []
@@ -306,12 +303,12 @@ async def search(req: SearchRequest):
                 unique_sources.append(source)
         result["sources"] = unique_sources
 
-        # 블로그 모바일 URL 치환
         for source in result["sources"]:
             if "blog.naver.com" in source["link"] and "m.blog.naver.com" not in source["link"]:
                 source["link"] = source["link"].replace("https://blog.naver.com", "https://m.blog.naver.com")
 
     return result
+
 
 @app.get("/health")
 async def health():
@@ -320,4 +317,3 @@ async def health():
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, workers=4)
-
