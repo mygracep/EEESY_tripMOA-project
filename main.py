@@ -325,14 +325,89 @@ async def search(req: SearchRequest):
 
     result["places"] = places if places else None
 
-    # 7. 출처 제목 보정 + 중복 소스 제거 + 모바일 URL 치환
+    def collect_cited_ref_ids(payload: dict) -> set[int]:
+        refs: set[int] = set()
+
+        def scan(text: str | None) -> None:
+            if not text:
+                return
+            for m in re.findall(r"\[ref:(\d+)\]", text):
+                refs.add(int(m))
+
+        scan(payload.get("summary"))
+        for warning in payload.get("warning", []):
+            scan(warning)
+        for section in payload.get("sections", []):
+            scan(section.get("content"))
+            table = section.get("table")
+            if table and isinstance(table.get("rows"), list):
+                for row in table["rows"]:
+                    if isinstance(row, list):
+                        for cell in row:
+                            scan(cell)
+            for review in section.get("reviews", []):
+                ref = review.get("ref")
+                if ref is not None:
+                    try:
+                        refs.add(int(ref))
+                    except (TypeError, ValueError):
+                        pass
+        return refs
+
+    def chunk_to_source(ref_id: int, chunk: dict, title: str) -> dict:
+        link = chunk.get("link", "")
+        channel = "네이버 블로그" if "blog.naver.com" in link else "네이버 카페"
+        return {
+            "id": ref_id,
+            "title": title,
+            "channel": channel,
+            "date": chunk.get("date", ""),
+            "link": link,
+        }
+
+    # 7. 본문 [ref:N] ↔ sources 동기화 + 제목 보정 + 중복 제거 + 모바일 URL
+    cited_refs = collect_cited_ref_ids(result)
+    sources_by_id: dict[int, dict] = {}
+
+    for source in result.get("sources", []):
+        try:
+            sid = int(source.get("id"))
+        except (TypeError, ValueError):
+            continue
+        sources_by_id[sid] = source
+
+    for ref_id in cited_refs:
+        if ref_id < 1 or ref_id > len(chunks):
+            continue
+        if ref_id in sources_by_id:
+            continue
+        chunk = chunks[ref_id - 1]
+        sources_by_id[ref_id] = chunk_to_source(
+            ref_id,
+            chunk,
+            chunk_titles_by_id.get(ref_id, resolve_chunk_title(chunk)),
+        )
+
+    if sources_by_id:
+        result["sources"] = sorted(sources_by_id.values(), key=lambda s: int(s["id"]))
+    elif result.get("sources") is None:
+        result["sources"] = []
+
     if result.get("sources"):
         seen_links = set()
         unique_sources = []
         for source in result["sources"]:
-            if source["link"] not in seen_links:
-                seen_links.add(source["link"])
-                unique_sources.append(source)
+            link = source.get("link")
+            try:
+                sid = int(source.get("id"))
+            except (TypeError, ValueError):
+                sid = None
+
+            if link and link in seen_links and sid not in cited_refs:
+                continue
+            if link:
+                seen_links.add(link)
+            unique_sources.append(source)
         result["sources"] = unique_sources
 
         for source in result["sources"]:
