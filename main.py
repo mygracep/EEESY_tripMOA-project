@@ -78,7 +78,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
     }
   ],
   "warning": [],
-  "follow_up": ["후속질문1", "후속질문2"],
+  "follow_up": ["후속질문1", "후속질문2", "후속질문3", "후속질문4", "후속질문5"],
   "sources": [
     {
       "id": 1,
@@ -145,8 +145,10 @@ null: 순서형 동선 정보 / 감성 설명 / 단일 정보
 
 
 [follow_up]
-- 2~3개, 답변에서 다루지 않은 영역 위주
-- 구체적으로 (예: "패스권 어디서 사야 해요?" O / "오사카 여행 어때?" X)"""
+- 4~5개, 답변에서 다루지 않은 영역 위주
+- 구체적으로 (예: "패스권 어디서 사야 해요?" O / "오사카 여행 어때?" X)
+- 반드시 도시명/동행인 등 맥락을 포함한 완성된 질문으로 작성
+  예) "마쓰야마 부모님 여행 맛집 추천해 주세요" O / "맛집 추천해 주세요" X"""
 
 
 class SearchRequest(BaseModel):
@@ -237,13 +239,35 @@ async def search(req: SearchRequest):
     for i, c in enumerate(chunks):
         print(f"[{i+1}] similarity={c.get('similarity', '?'):.3f} | {c.get('title','')[:30]} | {c['text'][:60]}")
 
-    def extract_title(text: str) -> str:
-        if text.startswith('제목:'):
-            return text.split('\n')[0].replace('제목: ', '').strip()
-        return '네이버 카페 후기'
-    
+    GENERIC_TITLES = {"", "네이버 카페 후기", "네이버 카페", "네이버 블로그 후기"}
+
+    def extract_title(text: str) -> str | None:
+        """text 첫 줄 '제목: ...' 에서 제목 추출. 본문(1. 숙박업소명...)은 다음 줄부터."""
+        if not text:
+            return None
+        first_line = text.strip().split("\n")[0].strip()
+        title_match = re.match(r"^제목\s*[:：]\s*(.+)$", first_line, re.IGNORECASE)
+        if title_match:
+            return title_match.group(1).strip() or None
+        return None
+
+    def resolve_chunk_title(chunk: dict) -> str:
+        db_title = (chunk.get("title") or "").strip()
+        extracted = extract_title(chunk.get("text", ""))
+
+        if extracted and db_title in GENERIC_TITLES:
+            return extracted
+        if db_title and db_title not in GENERIC_TITLES:
+            return db_title
+        if extracted:
+            return extracted
+        return "네이버 카페 후기"
+
+    chunk_titles_by_id = {i + 1: resolve_chunk_title(c) for i, c in enumerate(chunks)}
+    chunk_titles_by_link = {c["link"]: resolve_chunk_title(c) for c in chunks}
+
     context = "\n\n".join([
-        f"[id:{i+1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {c.get('title', '')}]\n{c['text']}"
+        f"[id:{i + 1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {chunk_titles_by_id[i + 1]}]\n{c['text']}"
         for i, c in enumerate(chunks)
     ])
 
@@ -301,7 +325,7 @@ async def search(req: SearchRequest):
 
     result["places"] = places if places else None
 
-    # 7. 중복 소스 제거 + 모바일 URL 치환
+    # 7. 출처 제목 보정 + 중복 소스 제거 + 모바일 URL 치환
     if result.get("sources"):
         seen_links = set()
         unique_sources = []
@@ -312,8 +336,24 @@ async def search(req: SearchRequest):
         result["sources"] = unique_sources
 
         for source in result["sources"]:
-            if "blog.naver.com" in source["link"] and "m.blog.naver.com" not in source["link"]:
-                source["link"] = source["link"].replace("https://blog.naver.com", "https://m.blog.naver.com")
+            ref_id = source.get("id")
+            if ref_id is not None:
+                try:
+                    ref_id = int(ref_id)
+                except (TypeError, ValueError):
+                    ref_id = None
+
+            link = source.get("link")
+            resolved = None
+            if isinstance(ref_id, int) and ref_id in chunk_titles_by_id:
+                resolved = chunk_titles_by_id[ref_id]
+            elif link in chunk_titles_by_link:
+                resolved = chunk_titles_by_link[link]
+            if resolved:
+                source["title"] = resolved
+
+            if link and "blog.naver.com" in link and "m.blog.naver.com" not in link:
+                source["link"] = link.replace("https://blog.naver.com", "https://m.blog.naver.com")
 
     return result
 
