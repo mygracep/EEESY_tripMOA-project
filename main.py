@@ -53,6 +53,12 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - 각 항목은 반드시 • **장소명** → 핵심 특징 1~2개 형식으로 작성
 - 소제목 필요하면 👉 소제목 형식 사용
 
+[장소 추천 개수 제한 — 필수]
+- 답변 전체에서 추천하는 고유 **장소명**은 최대 5개. 6개 이상 절대 금지.
+- 사진·지도 API 한도가 5개이므로, 초과 장소는 content·places_detail에 넣지 말 것.
+- 섹션을 여러 개 써도 **장소명** 중복은 1번만 카운트.
+- 후보가 많으면 핵심 5개만 추려서 추천. 나머지는 summary나 follow_up에서 다루지 말 것.
+
 예시)
 👉 위치 중심
 - **호텔 오크 시즈오카** → 시즈오카 시내, 상점가 근처, 도보 편리 [ref:3]
@@ -65,13 +71,19 @@ JSON 외 다른 텍스트는 절대 출력금지.
     {
       "icon": "아래 카테고리 목록에서 선택",
       "title": "섹션 제목",
-      "content": "장소/항목별로 줄바꿈 구분. 소제목 필요하면 👉 소제목 형식 사용. 각 항목은 • **장소명** → 핵심 특징 1~2개 형식으로 작성.\n예시)\n👉 위치 중심\n• **호텔 오크 시즈오카** → 시즈오카 시내, 상점가 근처, 도보 편리 [ref:3]\n• **유메구리 노 야도** → 석식·조식 포함, 부담 없는 가격 [ref:2]",
-      "reviews": [
+      "content": "장소/항목별로 줄바꿈 구분. 소제목 필요하면 👉 소제목 형식 사용. 각 항목은 • **장소명** → 핵심 특징 1~2개 형식으로 작성.",
+      "places_detail": [
         {
-          "text": "후기 원문에서 가장 생생한 문장 그대로 인용",
-          "sentiment": "positive 또는 negative",
-          "date": "YY.MM",
-          "ref": 1
+          "name": "장소명 (content의 **장소명**과 동일)",
+          "description": "핵심 특징 1~2개 (content의 → 뒤 설명과 동일)",
+          "reviews": [
+            {
+              "text": "해당 장소에 대한 후기 원문 인용",
+              "sentiment": "positive 또는 negative",
+              "date": "YY.MM",
+              "ref": 1
+            }
+          ]
         }
       ],
       "table": null
@@ -106,23 +118,37 @@ JSON 외 다른 텍스트는 절대 출력금지.
   icon: "", title: "2️⃣ 가성비+혼자 최적 (잠만 자면 이거)"
   icon: "", title: "3️⃣ 힐링형 (피로 풀고 싶으면)"
   icon: "💡", title: "상황별 추천 + 한 줄 결론"
-- 섹션당 장소 최대 3~4개. 핵심만 추려낼 것.
+- 섹션당 장소 1~2개씩 배분 가능. 단, 답변 전체 고유 **장소명** 합은 최대 5개.
 - 마지막 섹션은 반드시 "✔ 상황별 추천 + 한 줄 결론" 형식으로 끝낼 것.
   예) ✔ 첫 혼여/편하게 → 호텔명
       ✔ 가성비+잠만 → 호텔명
       👉 한 줄 결론: 혼여면 역세권 비즈니스 호텔이 정답
 - 카테고리는 후기 데이터에 있는 내용 기준으로만. 없는 카테고리 만들지 말 것.
 
-[reviews 생성 기준]
-- 장소별로 후기 원문에서 생생한 문장 2~3개 직접 인용. 요약 금지.
-- 반드시 부정적 후기 1개 이상 포함. 없으면 아쉬운 점 포함.
-- text는 후기 원문 말투 그대로. LLM이 재가공 금지.
-- sentiment: 긍정이면 "positive", 부정/아쉬운 점이면 "negative"
-- 장소가 없는 섹션(팁·조언 등)은 reviews: []
+[places_detail 생성 기준]
+- 추천형 섹션(숙소/맛집/관광지 등)은 반드시 places_detail 배열 사용. 섹션 레벨 reviews 필드 사용 금지.
+- 전체 sections의 places_detail name 합(중복 제외) 최대 5개. content의 **장소명** 개수와 동일해야 함.
+- places_detail 항목 수 = content의 • **장소명** 항목 수와 동일. 순서도 동일하게.
+- name: content의 **장소명**과 정확히 일치
+- description: content의 → 뒤 설명 (ref 포함 가능)
+- reviews: 해당 장소에 대한 후기만. 다른 장소 후기 섞지 말 것.
+- 장소당 후기 2~3개. 후기 원문 그대로 인용, 요약 금지.
+- 반드시 부정적 후기 1개 이상 포함 (없으면 아쉬운 점)
+- sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
+- 팁·결론만 있는 섹션(장소 없음)은 places_detail: []
 
 [table 생성 기준]
-생성: 비교 대상 2개 이상 + 같은 기준으로 비교 가능 + 유저가 선택해야 하는 상황
-null: 순서형 동선 정보 / 감성 설명 / 단일 정보
+아래 케이스면 반드시 table 생성:
+- 비교 대상 2개 이상 + 같은 기준으로 비교 가능 + 유저가 선택해야 하는 상황
+- 숙소 2개 이상 비교: 숙소명 / 위치 / 특징 (+ 쿼리 맥락에 따라 컬럼 추가)
+- 맛집 2개 이상 비교: 가게명 / 위치 / 대표메뉴 (+ 쿼리 맥락에 따라 컬럼 추가)
+- 일정 2박3일 이상: Day / 장소 / 팁
+- A vs B 선택 쿼리: 항목 / A / B
+
+null:
+- 장소 1개
+- 감성 설명
+- 단순 팁/조언
 
 [warning 생성 기준]
 해당하면 배열에 추가, 없으면 []:
@@ -136,7 +162,7 @@ null: 순서형 동선 정보 / 감성 설명 / 단일 정보
 - 출처 2개면 [ref:1][ref:2] 연속 표기
 - sources의 id와 매핑
 - 같은 링크가 중복되면 하나만 표기.
-- content와 reviews에 사용하는 [ref:N]은 반드시 sources에 존재하는 id만 사용할 것. sources에 없는 id 사용 금지.
+- content와 places_detail.reviews에 사용하는 [ref:N]은 반드시 sources에 존재하는 id만 사용할 것. sources에 없는 id 사용 금지.
 
 [sources 생성 기준]
 - 답변에서 [ref:N]으로 실제 인용한 청크만 포함. 최대 5개.
@@ -239,35 +265,95 @@ async def search(req: SearchRequest):
     for i, c in enumerate(chunks):
         print(f"[{i+1}] similarity={c.get('similarity', '?'):.3f} | {c.get('title','')[:30]} | {c['text'][:60]}")
 
-    GENERIC_TITLES = {"", "네이버 카페 후기", "네이버 카페", "네이버 블로그 후기"}
+    GENERIC_TITLES = {
+        "",
+        "네이버 카페 후기",
+        "네이버 카페",
+        "네이버 블로그 후기",
+        "네이버후기",
+        "네이버 후기",
+    }
+
+    def is_generic_title(title: str | None) -> bool:
+        t = (title or "").strip()
+        if not t or t in GENERIC_TITLES:
+            return True
+        if "네이버" in t and "후기" in t and len(t) <= 24:
+            return True
+        if t.endswith("?") or t.endswith("？"):
+            return True
+        return False
 
     def extract_title(text: str) -> str | None:
-        """text 첫 줄 '제목: ...' 에서 제목 추출. 본문(1. 숙박업소명...)은 다음 줄부터."""
+        """text에서 '제목: ...' 추출 (청크 분할돼도 본문 어디든 검색)."""
         if not text:
             return None
-        first_line = text.strip().split("\n")[0].strip()
-        title_match = re.match(r"^제목\s*[:：]\s*(.+)$", first_line, re.IGNORECASE)
-        if title_match:
-            return title_match.group(1).strip() or None
+        text = text.strip().lstrip("\ufeff").replace("\r\n", "\n")
+
+        for line in text.split("\n")[:20]:
+            line = line.strip()
+            m = re.match(r"^제목\s*[:：]\s*(.+)$", line, re.IGNORECASE)
+            if m:
+                return m.group(1).strip() or None
+
+        m = re.search(
+            r"(?:^|\n)제목\s*[:：]\s*(.+?)(?:\n|$)",
+            text[:4000],
+            re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).strip() or None
+
+        m = re.search(r"\[제목:\s*(.+?)\]", text[:800])
+        if m:
+            return m.group(1).strip() or None
+
         return None
 
     def resolve_chunk_title(chunk: dict) -> str:
         db_title = (chunk.get("title") or "").strip()
         extracted = extract_title(chunk.get("text", ""))
 
-        if extracted and db_title in GENERIC_TITLES:
+        if extracted and not is_generic_title(extracted):
             return extracted
-        if db_title and db_title not in GENERIC_TITLES:
+        if db_title and not is_generic_title(db_title):
             return db_title
         if extracted:
             return extracted
+        if db_title:
+            return db_title
         return "네이버 카페 후기"
 
     chunk_titles_by_id = {i + 1: resolve_chunk_title(c) for i, c in enumerate(chunks)}
-    chunk_titles_by_link = {c["link"]: resolve_chunk_title(c) for c in chunks}
+
+    # 같은 링크 청크 중 제목이 있는 조각을 우선 사용 (벡터 분할 대응)
+    link_best_titles: dict[str, str] = {}
+    for c in chunks:
+        link = c.get("link") or ""
+        if not link:
+            continue
+        title = resolve_chunk_title(c)
+        prev = link_best_titles.get(link)
+        if prev is None or (is_generic_title(prev) and not is_generic_title(title)):
+            link_best_titles[link] = title
+
+    chunk_titles_by_link = {
+        c["link"]: link_best_titles.get(c["link"], chunk_titles_by_id[i + 1])
+        for i, c in enumerate(chunks)
+    }
+
+    def best_title_for_chunk(ref_id: int, chunk: dict) -> str:
+        by_id = chunk_titles_by_id.get(ref_id, resolve_chunk_title(chunk))
+        link = chunk.get("link") or ""
+        by_link = link_best_titles.get(link) if link else None
+        if by_link and not is_generic_title(by_link):
+            return by_link
+        if not is_generic_title(by_id):
+            return by_id
+        return by_link or by_id
 
     context = "\n\n".join([
-        f"[id:{i + 1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {chunk_titles_by_id[i + 1]}]\n{c['text']}"
+        f"[id:{i + 1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {best_title_for_chunk(i + 1, c)}]\n{c['text']}"
         for i, c in enumerate(chunks)
     ])
 
@@ -345,6 +431,17 @@ async def search(req: SearchRequest):
                     if isinstance(row, list):
                         for cell in row:
                             scan(cell)
+            for pd in section.get("places_detail", []):
+                scan(pd.get("description"))
+                for review in pd.get("reviews", []):
+                    scan(review.get("text"))
+                    ref = review.get("ref")
+                    if ref is not None:
+                        try:
+                            refs.add(int(ref))
+                        except (TypeError, ValueError):
+                            pass
+            # 구 스키마 호환
             for review in section.get("reviews", []):
                 ref = review.get("ref")
                 if ref is not None:
@@ -385,7 +482,7 @@ async def search(req: SearchRequest):
         sources_by_id[ref_id] = chunk_to_source(
             ref_id,
             chunk,
-            chunk_titles_by_id.get(ref_id, resolve_chunk_title(chunk)),
+            best_title_for_chunk(ref_id, chunk),
         )
 
     if sources_by_id:
@@ -420,11 +517,17 @@ async def search(req: SearchRequest):
 
             link = source.get("link")
             resolved = None
-            if isinstance(ref_id, int) and ref_id in chunk_titles_by_id:
+            if isinstance(ref_id, int) and 1 <= ref_id <= len(chunks):
+                resolved = best_title_for_chunk(ref_id, chunks[ref_id - 1])
+            elif link and link in link_best_titles:
+                resolved = link_best_titles[link]
+            elif isinstance(ref_id, int) and ref_id in chunk_titles_by_id:
                 resolved = chunk_titles_by_id[ref_id]
-            elif link in chunk_titles_by_link:
-                resolved = chunk_titles_by_link[link]
-            if resolved:
+
+            # LLM generic 제목 → 서버 추출 제목으로 교체 (서버도 generic이면 기존 유지)
+            if resolved and not is_generic_title(resolved):
+                source["title"] = resolved
+            elif resolved and is_generic_title(source.get("title")):
                 source["title"] = resolved
 
             if link and "blog.naver.com" in link and "m.blog.naver.com" not in link:
