@@ -95,8 +95,8 @@ JSON 외 다른 텍스트는 절대 출력금지.
 ⛩️ 관광지 / 💡 팁·조언 / 🌤️ 날씨 / 🛍️ 쇼핑
 - 쿼리와 관련된 섹션만 생성. 최소 1개, 최대 5개.
 - icon 필드에는 이모지만 넣으세요. 텍스트 포함 금지
-- 추천형 쿼리(숙소/맛집/관광지 추천)는 icon을 빈값("")으로 두고, title 앞에 1️⃣ 2️⃣ 3️⃣ 순서로 붙일 것.
-  마지막 상황별 추천 섹션은 icon을 💡로.
+- - 추천형 쿼리(숙소/맛집/관광지/일정 추천)는 반드시 icon을 빈값("")으로 두고, title 앞에 1️⃣ 2️⃣ 3️⃣ 4️⃣ 순서로 붙일 것. 숙소/맛집/관광지 아이콘 사용 금지.
+  마지막 상황별 추천 섹션만 icon을 💡로.
 
 [섹션 구성 원칙]
 - 추천형 쿼리는 쿼리의 동행인/목적/여행스타일을 먼저 파악.
@@ -136,10 +136,13 @@ null: 순서형 동선 정보 / 감성 설명 / 단일 정보
 - 출처 2개면 [ref:1][ref:2] 연속 표기
 - sources의 id와 매핑
 - 같은 링크가 중복되면 하나만 표기.
+- content와 reviews에 사용하는 [ref:N]은 반드시 sources에 존재하는 id만 사용할 것. sources에 없는 id 사용 금지.
 
 [sources 생성 기준]
 - 답변에서 [ref:N]으로 실제 인용한 청크만 포함. 최대 5개.
 - title은 반드시 [제목: ...] 에서 가져올 것. 본문 내용 절대 금지.
+- [제목: ...] 이 없거나 질문 형태의 글이면 title을 "네이버 카페 후기"로 표기할 것.
+
 
 [follow_up]
 - 2~3개, 답변에서 다루지 않은 영역 위주
@@ -234,6 +237,11 @@ async def search(req: SearchRequest):
     for i, c in enumerate(chunks):
         print(f"[{i+1}] similarity={c.get('similarity', '?'):.3f} | {c.get('title','')[:30]} | {c['text'][:60]}")
 
+    def extract_title(text: str) -> str:
+        if text.startswith('제목:'):
+            return text.split('\n')[0].replace('제목: ', '').strip()
+        return '네이버 카페 후기'
+    
     context = "\n\n".join([
         f"[id:{i+1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {c.get('title', '')}]\n{c['text']}"
         for i, c in enumerate(chunks)
