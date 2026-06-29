@@ -176,8 +176,9 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - reviews: 해당 장소 **직접 방문·체험 후기**만. 다른 장소 후기 섞지 말 것.
 - **reviews 제외:** 질문·문의(?/궁금/할까요), 일정·동선 나열(/, ->), 의견·제안만(~포기하면, ~넣고 싶)
 - **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 추천/비추, 아쉬운 **경험**
-- 장소당 실후기 **최대 3개**. 위 기준 통과 후기만. 가능한 3개까지 채울 것.
-- 후기 원문 그대로 인용, 요약 금지.
+- 장소당 실후기 **3개 필수** (참고 후기에 3개 이상 있으면 반드시 3개). 1~2개만 넣지 말 것.
+- reviews.text: 참고 후기 **원문 전체**를 줄임·요약 없이 복사. 첫 문장만 잘라내지 말 것. 2~4문장·줄바꿈 포함 가능.
+- 후기 원문 그대로 인용, 요약·한 줄 압축 금지.
 - 부정 후기 1개 이상 포함 (질문형·의견형 negative 금지, 실제 아쉬운 **경험**만)
 - sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
 - warnings: **negative reviews에서 주의사항을 15자 이내로 요약**하여 반드시 추출. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
@@ -193,7 +194,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
   ✗ 타인 의견 인용 ("~하라고 하더라구요")
   ✗ 계획/의도 서술 ("~할 예정이에요", "~넣고 싶어요")
   ✗ 조언/추천만 있는 문장 ("~하시는게 좋아요", "~추천드려요")
-  ✗ 50자 미만 짧은 문장 (맥락 없는 단편 정보)
+  ✗ 한 문장만 잘라낸 단편 (원문 전체 복사)
 - 퀄리티 좋은 후기 기준:
   ✔ 구체적 경험 ("웨이팅 30분 기다렸는데 그만한 가치 있었어요")
   ✔ 감정/느낌 포함 ("부모님이 너무 좋아하셨어요")
@@ -292,20 +293,19 @@ SCHEDULE_FEELING_RE = re.compile(
 )
 
 QUESTION_RE = re.compile(
-    r"[?？]|궁금|할까|어떻게|알려|가능할까|가능하지|과한|넣고\s*싶|포기하면|이견|죠\?|까요|을까|를까|인지\s*궁금",
+    r"[?？]|궁금합니다|궁금해요|궁금한|할까요|될까요|을까요|를까요|인지\s*궁금|할까\?|될까\?|어떻게\s*해야|알려주세요",
     re.I,
 )
+OPINION_RE = re.compile(r"포기하면|이견|넣고\s*싶은데|넣고\s*싶어", re.I)
 ITINERARY_DUMP_RE = re.compile(
     r"(?:/|->|→).*(?:/|->|→)|주차장-|복귀.*취침|저녁식사후|하부\s*무료",
     re.I,
 )
 
 
-def is_valid_review_text(text: str) -> bool:
+def is_relaxed_review_text(text: str) -> bool:
     t = (text or "").strip()
-    if len(t) < 10:
-        return False
-    if QUESTION_RE.search(t):
+    if len(t) < 8:
         return False
     if ITINERARY_DUMP_RE.search(t):
         return False
@@ -313,19 +313,56 @@ def is_valid_review_text(text: str) -> bool:
         return False
     if re.search(r"폭포.*/.*호수|호수.*/.*폭포", t, re.I):
         return False
+    if re.search(r"[?？]", t):
+        return False
     return True
 
 
-def filter_valid_reviews(reviews: list) -> list:
-    out = []
+def is_valid_review_text(text: str) -> bool:
+    t = (text or "").strip()
+    if not is_relaxed_review_text(t):
+        return False
+    if QUESTION_RE.search(t):
+        return False
+    if OPINION_RE.search(t):
+        return False
+    return True
+
+
+def pick_place_reviews(reviews: list) -> list:
+    strict: list = []
+    relaxed_pool: list = []
+
     for r in reviews or []:
         if not isinstance(r, dict):
             continue
-        if is_valid_review_text(r.get("text", "")):
-            out.append(r)
+        text = (r.get("text") or "").strip()
+        if not text:
+            continue
+        if is_valid_review_text(text):
+            strict.append(r)
+        elif is_relaxed_review_text(text):
+            relaxed_pool.append(r)
+
+    out = strict[:3]
+    if len(out) >= 3:
+        return out
+
+    seen = {(r.get("text") or "").strip() for r in out}
+    for r in relaxed_pool:
+        text = (r.get("text") or "").strip()
+        if text in seen:
+            continue
+        out.append(r)
+        seen.add(text)
         if len(out) >= 3:
             break
-    return out
+
+    return out[:3]
+
+
+def filter_valid_reviews(reviews: list) -> list:
+    return pick_place_reviews(reviews)
 
 
 def _strip_warning_endings(body: str) -> str:
@@ -423,7 +460,7 @@ def infer_warnings_from_reviews(reviews: list) -> list[str]:
 
 
 def postprocess_place_detail(pd: dict) -> None:
-    pd["reviews"] = filter_valid_reviews(pd.get("reviews", []))
+    pd["reviews"] = pick_place_reviews(pd.get("reviews", []))
     raw_warnings = pd.get("warnings") or []
     pd["warnings"] = [
         w
