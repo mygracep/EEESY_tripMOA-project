@@ -51,21 +51,27 @@ JSON 외 다른 텍스트는 절대 출력금지.
 [모바일 가독성 — 필드별 길이]
 균일한 길이로 작성. 아래를 반드시 지킬 것.
 - summary: 1~2문장, 40자 이내
-- content bullet (특징 줄): 10~20자, 키워드형. 맥락 있는 짧은 구문
+- content 불릿 (- 줄): 20~35자, 설명식 짧은 문장. 단어 나열 금지
 - description: 2~3문장, 문장당 30~40자. 위치·분위기·특징·추천 이유 포함
 
 [content 작성 형식]
-- 장소/항목별로 줄바꿈 구분
-- 각 항목은 • **장소명** 한 줄, 다음 줄에 핵심 특징 (→ 기호 사용 금지)
-- 특징 줄: 10~20자 키워드형. 맥락 있는 짧은 구문
-- 소제목 필요하면 👉 소제목 형식 사용 (소제목 아래 장소 나열)
+- 추천형 섹션: 각 장소는 아래 순서로 작성 (프론트 렌더 순서와 일치)
+  1) 카테고리 이모지 + **장소명** 한 줄 (👉 소제목 사용 금지)
+     이모지: 맛집🍜 / 숙소🏨 / 관광⛩️ / 쇼핑🛍️ / 교통🚆 / 동선🗺️ / 비용💰
+  2) - 로 시작하는 설명식 불릿 2~3개. 각 20~35자 짧은 문장. 단어 나열 금지. [ref:N] 포함
+  3) 장소 사이 빈 줄
+- 불릿은 추천 포인트 요약 (실후기 원문은 places_detail.reviews)
+- → 기호 사용 금지
 
 예시)
-👉 위치 중심
-• **호텔 오크 시즈오카**
-시즈오카 시내, 상점가 근처, 도보 편리 [ref:3]
-• **유메구리 노 야도**
-석식·조식 포함, 부담 없는 가격 [ref:2]
+🍜 **마쓰야마 아키요시 타이메시 본점**
+- 도미밥 전문점이라 도미밥은 꼭 시켜야 해요 [ref:2]
+- 키즈 메뉴가 있어서 어린이와 함께 OK [ref:2]
+- 장난감 증정으로 아이들 만족도 높음 [ref:2]
+
+🏨 **호텔 오크 시즈오카**
+- 시내 중심 상점가 근처라 도보 이동 편해요 [ref:3]
+- 역과 가까워 짐 많을 때도 부담 없어요 [ref:3]
 
 [출력 JSON 구조]
 {
@@ -74,11 +80,12 @@ JSON 외 다른 텍스트는 절대 출력금지.
     {
       "icon": "아래 카테고리 목록에서 선택",
       "title": "섹션 제목",
-      "content": "장소/항목별 줄바꿈. 👉 소제목 사용 가능. 각 항목: • **장소명** 한 줄 + 다음 줄 특징(→ 금지, 10~20자)",
+      "content": "장소별 줄바꿈. 각 장소: 이모지+**장소명** 한 줄 → - 불릿 2~3개(설명식 20~35자, → 금지) → 빈 줄",
       "places_detail": [
         {
           "name": "장소명 (content의 **장소명**과 동일)",
           "description": "해당 장소 핵심 특징 2~3문장 (문장당 30~40자). 위치, 분위기, 특징, 추천 이유 포함. [ref:N] 가능.",
+          "warnings": ["해당 장소 주의사항만. 없으면 []. 15자 이내 키워드형 [ref:N] 가능"],
           "reviews": [
             {
               "text": "해당 장소에 대한 후기 원문 인용",
@@ -120,18 +127,19 @@ JSON 외 다른 텍스트는 절대 출력금지.
   icon: "", title: "1️⃣ 위치+편의성 최강 (혼자 여행 기본 선택)"
   icon: "", title: "2️⃣ 가성비+혼자 최적 (잠만 자면 이거)"
   icon: "", title: "3️⃣ 힐링형 (피로 풀고 싶으면)"
-  icon: "💡", title: "상황별 추천 + 한 줄 결론"
+  icon: "💡", title: "💡 상황별추천"
 - 섹션당 장소 1~2개씩 배분 가능. 단, 답변 전체 고유 **장소명** 합은 최대 5개.
-- 마지막 섹션은 반드시 "✔ 상황별 추천 + 한 줄 결론" 형식으로 끝낼 것.
-  예) ✔ 첫 혼여/편하게 → 호텔명
-      ✔ 가성비+잠만 → 호텔명
-      👉 한 줄 결론: 혼여면 역세권 비즈니스 호텔이 정답
+- 마지막 섹션은 반드시 title "💡 상황별추천" 으로 끝낼 것 (icon: "" 또는 💡).
+  content 예)
+  ✔ 첫 혼여/편하게 → **호텔명**
+  ✔ 가성비+잠만 → **호텔명**
+  👉 한 줄 결론: 혼여면 역세권 비즈니스 호텔이 정답
 - 카테고리는 후기 데이터에 있는 내용 기준으로만. 없는 카테고리 만들지 말 것.
 
 [places_detail 생성 기준]
 - 추천형 섹션(숙소/맛집/관광지 등)은 반드시 places_detail 배열 사용. 섹션 레벨 reviews 필드 사용 금지.
 - 전체 sections의 places_detail name 합(중복 제외) 최대 5개. content의 **장소명** 개수와 동일해야 함.
-- places_detail 항목 수 = content의 • **장소명** 항목 수와 동일. 순서도 동일하게.
+- places_detail 항목 수 = content의 **장소명** 항목 수와 동일. 순서도 동일하게.
 - name: content의 **장소명**과 정확히 일치
 - description: 2~3문장, 문장당 30~40자. 위치, 분위기, 특징, 추천 이유 포함. [ref:N] 포함 가능.
 - reviews: 해당 장소에 대한 후기만. 다른 장소 후기 섞지 말 것.
@@ -139,7 +147,17 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - 후기 원문 그대로 인용, 요약 금지.
 - 반드시 부정적 후기 1개 이상 포함 (없으면 아쉬운 점)
 - sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
+- warnings: **negative reviews에서 주의사항을 15자 이내로 요약**하여 반드시 추출. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
 - 팁·결론만 있는 섹션(장소 없음)은 places_detail: []
+
+[warning 생성 기준 — places_detail.warnings]
+- **negative reviews의 주의·아쉬운 점을 반드시 warnings로 변환** (후기에 있으면 빈 배열 금지)
+- 막차/영업종료/예약마감/현금only/입장제한/대기/휴무/공간좁음 등
+- 각 항목 **15자 이내** 키워드·구 형태. ~해요/~합니다 등 **종결 어미 금지**
+- 해당 negative review의 ref를 [ref:N]으로 표기
+- 예) negative "닌텐도 월드는 타이밍 티켓 없으면 못 들어가요" → warnings: ["타이밍 티켓 사전예약 [ref:1]"]
+- 정말 주의사항이 없는 positive-only 장소만 warnings: []
+- **최상위 warning 필드는 항상 []**
 
 [table 생성 기준]
 아래 케이스면 반드시 table 생성:
@@ -154,21 +172,12 @@ null:
 - 감성 설명
 - 단순 팁/조언
 
-[warning 생성 기준]
-해당하면 배열에 추가, 없으면 []:
-- 막차/영업종료/예약마감
-- 현금only/현장발권 불가
-- 날씨·계절로 헛걸음 가능성
-- 사전예약 필수
-- 각 warning은 **15자 이내** 키워드·구 형태. ~해요/~합니다 등 **종결 어미 금지**
-- 예) "막차 23:30" / "현금만 가능" / "사전예약 필수" / "월요일 휴무"
-
 [출처 인라인 표기]
 - 문장 끝에 [ref:N] 표기
 - 출처 2개면 [ref:1][ref:2] 연속 표기
 - sources의 id와 매핑
 - 같은 링크가 중복되면 하나만 표기.
-- content와 places_detail.reviews에 사용하는 [ref:N]은 반드시 sources에 존재하는 id만 사용할 것. sources에 없는 id 사용 금지.
+- content와 places_detail.reviews, places_detail.warnings에 사용하는 [ref:N]은 반드시 sources에 존재하는 id만 사용할 것. sources에 없는 id 사용 금지.
 
 [sources 생성 기준]
 - 답변에서 [ref:N]으로 실제 인용한 청크만 포함. 최대 5개.
@@ -181,6 +190,84 @@ null:
 - 구체적으로 (예: "패스권 어디서 사야 해요?" O / "오사카 여행 어때?" X)
 - 반드시 도시명/동행인 등 맥락을 포함한 완성된 질문으로 작성
   예) "마쓰야마 부모님 여행 맛집 추천해 주세요" O / "맛집 추천해 주세요" X"""
+
+
+CAUTION_RULES = [
+    (re.compile(r"타이밍\s*티켓|사전\s*예약|예약\s*필수|예약\s*해야|예약\s*없"), "사전예약 필수"),
+    (re.compile(r"막차|마지막\s*열차|라스트\s*오더", re.I), "막차·마감 확인"),
+    (re.compile(r"휴무|정기\s*휴|쉬는\s*날"), "휴무일 확인"),
+    (re.compile(r"월요일|화요일|수요일|목요일|금요일|토요일|일요일"), "요일별 휴무 확인"),
+    (re.compile(r"현금\s*만|현금\s*only", re.I), "현금만 가능"),
+    (re.compile(r"입장\s*(제한|불가)|못\s*들어|입장\s*불"), "입장 제한 있음"),
+    (re.compile(r"티켓|입장권|패스"), "티켓 사전확인"),
+    (re.compile(r"줄\s|대기|웨이팅|기다"), "대기 시간 길어요"),
+    (re.compile(r"좁|빡빡|캐리어"), "공간·수납 주의"),
+    (re.compile(r"일찍|아침\s*일찍|오픈\s*런"), "오픈런·이른 방문"),
+]
+
+
+def _ref_suffix_for_review(review: dict, text: str) -> str:
+    ref = review.get("ref")
+    if ref is not None:
+        return f" [ref:{ref}]"
+    m = re.search(r"(\s*(?:\[ref:\d+\])+)\s*$", text)
+    return m.group(1) if m else ""
+
+
+def _first_clause(text: str, max_len: int = 18) -> str:
+    clause = re.sub(r"\[ref:\d+\]", "", text.replace("**", "")).split("\n")[0]
+    clause = re.split(r"[.。!?]", clause)[0].strip()
+    if len(clause) < 4:
+        return ""
+    return clause[:max_len]
+
+
+def infer_warnings_from_reviews(reviews: list) -> list[str]:
+    if not reviews:
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for review in reviews:
+        if review.get("sentiment") != "negative":
+            continue
+
+        text = review.get("text") or ""
+        ref_suffix = _ref_suffix_for_review(review, text)
+        matched = False
+
+        for pattern, label in CAUTION_RULES:
+            if pattern.search(text):
+                w = f"{label}{ref_suffix}"
+                if w not in seen:
+                    seen.add(w)
+                    out.append(w)
+                matched = True
+                break
+
+        if not matched:
+            clause = _first_clause(text)
+            if clause:
+                w = f"{clause}{ref_suffix}"
+                if w not in seen:
+                    seen.add(w)
+                    out.append(w)
+
+        if len(out) >= 2:
+            break
+
+    return out[:2]
+
+
+def enrich_place_warnings(result: dict) -> None:
+    for section in result.get("sections", []):
+        for pd in section.get("places_detail", []):
+            if pd.get("warnings"):
+                continue
+            inferred = infer_warnings_from_reviews(pd.get("reviews", []))
+            if inferred:
+                pd["warnings"] = inferred
 
 
 class SearchRequest(BaseModel):
@@ -525,6 +612,8 @@ async def search(req: SearchRequest):
     print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True, file=sys.stderr)
 
+    enrich_place_warnings(result)
+
     # 6. content에서 장소명 추출 → Places API 호출 (최대 5개)
     place_names = []
     for section in result.get("sections", []):
@@ -559,8 +648,6 @@ async def search(req: SearchRequest):
                 refs.add(int(m))
 
         scan(payload.get("summary"))
-        for warning in payload.get("warning", []):
-            scan(warning)
         for section in payload.get("sections", []):
             scan(section.get("content"))
             table = section.get("table")
@@ -571,6 +658,8 @@ async def search(req: SearchRequest):
                             scan(cell)
             for pd in section.get("places_detail", []):
                 scan(pd.get("description"))
+                for warning in pd.get("warnings", []):
+                    scan(warning)
                 for review in pd.get("reviews", []):
                     scan(review.get("text"))
                     ref = review.get("ref")
