@@ -150,6 +150,9 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - Day 섹션 content에 🏨 숙소 넣지 말 것. 숙소는 별도 섹션으로 분리.
 - Day 섹션 다음·여행 팁 직전에 icon "🏨", title "숙소 추천" (title에 🏨 이모지 중복 금지, icon만 사용).
 - Day에는 🍜 맛집·⛩️ 관광·🚆 이동 포함 가능.
+- **전체 sections의 places_detail name 합(숙소 섹션 포함) 최대 5개 엄수.**
+  Day가 3개면 Day당 1~2개만. 숙소 2개 + Day 장소 3개 = 5개가 한계.
+  6개 이상 places_detail 생성 금지 — JSON 출력이 깨질 수 있음.
 - places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (여행 팁·숙소 섹션은 places_detail 필수).
   reviews 최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
 - 마지막 섹션은 💡 상황별추천이 아니라 💡 여행 팁으로 끝낼 것.
@@ -175,7 +178,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - description: 2~3문장, 문장당 30~40자. 위치, 분위기, 특징, 추천 이유 포함. [ref:N] 포함 가능.
 - reviews: 해당 장소 **직접 방문·체험 후기**만. 다른 장소 후기 섞지 말 것.
 - **reviews 제외:** 질문·문의(?/궁금/할까요), 일정·동선 나열(/, ->), 의견·제안만(~포기하면, ~넣고 싶)
-- **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 추천/비추, 아쉬운 **경험**
+- **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 일정·동선 조언, 추천/비추, 아쉬운 **경험**
 - 장소당 실후기 **3개 필수** (참고 후기에 3개 이상 있으면 반드시 3개). 1~2개만 넣지 말 것.
 - reviews.text: 참고 후기 **원문 전체**를 줄임·요약 없이 복사. 첫 문장만 잘라내지 말 것. 2~4문장·줄바꿈 포함 가능.
 - 후기 원문 그대로 인용, 요약·한 줄 압축 금지.
@@ -193,8 +196,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
   ✗ 일정 나열형 (장소명만 나열)
   ✗ 타인 의견 인용 ("~하라고 하더라구요")
   ✗ 계획/의도 서술 ("~할 예정이에요", "~넣고 싶어요")
-  ✗ 조언/추천만 있는 문장 ("~하시는게 좋아요", "~추천드려요")
-  ✗ 한 문장만 잘라낸 단편 (원문 전체 복사)
+  ✗ 한 문장만 잘라낸 단편·중간에서 끊긴 문장 ("움직이시"처럼 미완성). 원문 **끝까지** 복사
 - 퀄리티 좋은 후기 기준:
   ✔ 구체적 경험 ("웨이팅 30분 기다렸는데 그만한 가치 있었어요")
   ✔ 감정/느낌 포함 ("부모님이 너무 좋아하셨어요")
@@ -459,6 +461,95 @@ def infer_warnings_from_reviews(reviews: list) -> list[str]:
     return out[:2]
 
 
+MAX_REVIEW_CHUNK_HOPS = 3
+
+KOREAN_SENTENCE_END_RE = re.compile(
+    r"(?:요|다|니다|습니다|해요|돼요|있어요|없어요|네요|죠|래요|이에요|예요|구요|군요|게요|"
+    r"세요|시요|시죠|습니까|까요)[.!?…]?\s*$"
+)
+
+
+def is_review_text_truncated(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.search(r'[.!?。]"?\s*$', t):
+        return False
+    if KOREAN_SENTENCE_END_RE.search(t):
+        return False
+    return True
+
+
+def _fetch_travel_chunk_text(article_id, chunk_index: int) -> str | None:
+    res = (
+        supabase.table("travel_chunks")
+        .select("text")
+        .eq("article_id", article_id)
+        .eq("chunk_index", chunk_index)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
+        return None
+    return (rows[0].get("text") or "").strip() or None
+
+
+async def extend_truncated_review(text: str, chunk: dict) -> str:
+    """reviews 후처리: 문장이 끊겼으면 같은 article_id의 다음 청크를 이어붙임."""
+    article_id = chunk.get("article_id")
+    chunk_index = chunk.get("chunk_index")
+    if article_id is None or chunk_index is None:
+        return text
+
+    out = (text or "").strip()
+    next_index = int(chunk_index)
+
+    for _ in range(MAX_REVIEW_CHUNK_HOPS):
+        if not is_review_text_truncated(out):
+            break
+        next_index += 1
+        next_text = await asyncio.to_thread(
+            _fetch_travel_chunk_text, article_id, next_index
+        )
+        if not next_text:
+            break
+        out = out + next_text
+
+    return out
+
+
+def _review_ref_id(review: dict) -> int | None:
+    ref = review.get("ref")
+    if ref is not None:
+        try:
+            return int(ref)
+        except (TypeError, ValueError):
+            pass
+    text = review.get("text") or ""
+    m = re.search(r"\[ref:(\d+)\]", text)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+async def extend_result_reviews(result: dict, chunks: list) -> None:
+    for section in result.get("sections", []):
+        for pd in section.get("places_detail", []):
+            for review in pd.get("reviews", []):
+                if not isinstance(review, dict):
+                    continue
+                text = (review.get("text") or "").strip()
+                if not text or not is_review_text_truncated(text):
+                    continue
+                ref_id = _review_ref_id(review)
+                if ref_id is None or ref_id < 1 or ref_id > len(chunks):
+                    continue
+                extended = await extend_truncated_review(text, chunks[ref_id - 1])
+                if extended != text:
+                    review["text"] = extended
+
+
 def postprocess_place_detail(pd: dict) -> None:
     pd["reviews"] = pick_place_reviews(pd.get("reviews", []))
     raw_warnings = pd.get("warnings") or []
@@ -498,6 +589,7 @@ ITINERARY_MODE_BLOCK = """
 □ Day 섹션 title "DAY1 — 소제목", icon "" (이모지 없음)
 □ Day content: 실제 **장소명**만. 카테고리 줄·동일 장소명 중복 금지. 이동 줄에 약 N분/N시간 필수
 □ Day에 🏨 숙소 없음 → icon 🏨 + title "숙소 추천" 섹션 별도
+□ 전체 places_detail name 합(숙소 포함) **5개 이하** — Day당 1~2개만
 □ 각 Day: content **장소명**마다 places_detail + reviews(최대 3) + warnings
 □ 마지막만 "💡 여행 팁", places_detail: []
 """
@@ -889,12 +981,15 @@ async def search(req: SearchRequest):
     )
     query_vector = result.embeddings[0].values
 
+    itinerary_query = is_itinerary_query(req.query)
+    match_count = 15 if itinerary_query else req.match_count
+
     # 2. 벡터 검색 (유튜브는 RPC 없거나 실패 시 빈 배열 — 후기 검색은 계속)
     res = await asyncio.to_thread(
         lambda: supabase.rpc("match_travel_chunks", {
             "query_embedding": query_vector,
             "match_threshold": req.match_threshold,
-            "match_count": req.match_count,
+            "match_count": match_count,
             "filter_city": req.city,
             "filter_category": req.category,
             "filter_travel_style": req.travel_style
@@ -1078,7 +1173,6 @@ async def search(req: SearchRequest):
         for i, c in enumerate(chunks)
     ])
 
-    itinerary_query = is_itinerary_query(req.query)
     system_prompt = build_system_prompt(req.query)
 
     # 4. Gemini 답변 생성
@@ -1113,6 +1207,7 @@ async def search(req: SearchRequest):
 
     if itinerary_query:
         normalize_itinerary_response(result)
+        await extend_result_reviews(result, chunks)
     enrich_place_warnings(result)
 
     # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
