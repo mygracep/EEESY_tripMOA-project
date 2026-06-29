@@ -824,12 +824,21 @@ def collect_place_names_for_api(
 
 
 def extract_map_title(query: str, city: str = None) -> str:
-    keywords = ["2박3일", "3박4일", "일정", "숙소", "맛집", "코스"]
+    keywords = ["2박3일", "3박4일", "4박5일", "1박2일", "일정", "숙소", "맛집", "코스"]
+
+    if not city:
+        cities = ["오사카", "마쓰야마", "시즈오카", "교토", "도쿄", "후쿠오카", "나라", "고베"]
+        for c in cities:
+            if c in query:
+                city = c
+                break
+
     title = city or ""
     for kw in keywords:
         if kw in query:
             title = f"{title} {kw}".strip()
             break
+
     return title or query[:15]
 
 
