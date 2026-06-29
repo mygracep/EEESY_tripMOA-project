@@ -159,6 +159,12 @@ JSON 외 다른 텍스트는 절대 출력금지.
   - 각 줄 끝 [ref:N] 필수 (후기 근거)
   - **장소명 블록·이모지+장소·사진 형식 사용 금지**
   - 👉 한 줄 결론 1줄 가능
+- content 불릿은 "이동해요 / 식사해요" 같은 행동 나열 금지.
+  반드시 해당 장소의 특징·추천 이유·팁을 담을 것.
+  후기 데이터에 정보 없으면 해당 장소 불릿 생략.
+- reviews는 실제 경험 서술 문장만. 
+  시간표형("8시 저녁ㅡ 돈요시"), 질문형, 일정 나열형 금지.
+
 
 [places_detail 생성 기준]
 - 추천형·일정형 Day 섹션 모두 places_detail 배열 필수. 섹션 레벨 reviews 필드 사용 금지.
@@ -176,6 +182,15 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
 - warnings: **negative reviews에서 주의사항을 15자 이내로 요약**하여 반드시 추출. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
 - 팁·결론만 있는 섹션(장소 없음)은 places_detail: []
+
+[reviews 생성 기준]
+- 실제 경험 서술 문장만 인용. (~했어요, ~였어요, ~좋았어요, ~별로였어요)
+- 아래는 reviews에 넣지 말 것:
+  ✗ 질문형 (~까요?, ~나요?, ~죠?, ~할까요?)
+  ✗ 시간표형 ("8시 저녁ㅡ 돈요시", "1)2)3)" 형태)
+  ✗ 일정 나열형 (장소명만 나열)
+  ✗ 타인 의견 인용 ("~하라고 하더라구요")
+
 
 [warning 생성 기준 — places_detail.warnings]
 - **negative reviews의 주의·아쉬운 점을 warnings로 변환** (아래 유형 우선, 실제 방문 경험 기반)
@@ -501,7 +516,10 @@ def _is_day_section_title(title: str) -> bool:
 
 
 def _place_photo_priority(name: str) -> int:
+    """사진 API 우선순위: 명소(0) → 숙소(1) → 맛집(2). 쇼핑·이동은 99(제외)."""
     if re.search(r"공항|이동수단|^이동$|출국|입국|도착", name, re.I):
+        return 99
+    if re.search(r"쇼핑|마켓|백화점|아울렛|면세", name, re.I):
         return 99
     if re.search(
         r"관광|신사|사찰|USJ|스튜디오|박물관|공원|타워|성|전망|이나리|유니버설|폭포|해변|계곡|온천|폭",
@@ -509,13 +527,11 @@ def _place_photo_priority(name: str) -> int:
         re.I,
     ):
         return 0
-    if re.search(r"쇼핑|마켓|백화점", name, re.I):
+    if re.search(r"호텔|숙소|료칸|게스트|민박|펜션|inn", name, re.I):
         return 1
-    if re.search(r"맛집|식당|카페|타코|오코노미", name, re.I):
+    if re.search(r"맛집|식당|카페|타코|오코노미|라멘|스시", name, re.I):
         return 2
-    if re.search(r"호텔|숙소|료칸", name, re.I):
-        return 3
-    return 2
+    return 0
 
 
 def _section_place_names(section: dict) -> list[str]:
@@ -613,11 +629,11 @@ def collect_place_names_for_api(
 
         for n in day_attractions:
             pick(n)
-        rest_pool.sort(key=_place_photo_priority)
-        for n in rest_pool:
-            pick(n)
         lodging_pool.sort(key=_place_photo_priority)
         for n in lodging_pool:
+            pick(n)
+        rest_pool.sort(key=_place_photo_priority)
+        for n in rest_pool:
             pick(n)
         return picked[:limit]
 
