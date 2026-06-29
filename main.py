@@ -55,7 +55,8 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - description: 2~3문장, 문장당 30~40자. 위치·분위기·특징·추천 이유 포함
 
 [content 작성 형식]
-- 추천형 섹션: 각 장소는 아래 순서로 작성 (프론트 렌더 순서와 일치)
+- 일정형 Day 섹션은 이 형식을 쓰지 말고 [일정형 쿼리 처리]의 오전/오후/저녁 형식만 사용.
+- 추천형 섹션(숙소/맛집/관광지 — 일정형 Day 제외): 각 장소는 아래 순서로 작성 (프론트 렌더 순서와 일치)
   1) 카테고리 이모지 + **장소명** 한 줄 (👉 소제목 사용 금지)
      이모지: 맛집🍜 / 숙소🏨 / 관광⛩️ / 쇼핑🛍️ / 교통🚆 / 동선🗺️ / 비용💰
   2) - 로 시작하는 설명식 불릿 2~3개. 각 20~35자 짧은 문장. 단어 나열 금지. [ref:N] 포함
@@ -117,10 +118,11 @@ JSON 외 다른 텍스트는 절대 출력금지.
 ⛩️ 관광지 / 💡 팁·조언 / 🌤️ 날씨 / 🛍️ 쇼핑
 - 쿼리와 관련된 섹션만 생성. 최소 1개, 최대 5개.
 - icon 필드에는 이모지만 넣으세요. 텍스트 포함 금지
-- - 추천형 쿼리(숙소/맛집/관광지/일정 추천)는 반드시 icon을 빈값("")으로 두고, title 앞에 1️⃣ 2️⃣ 3️⃣ 4️⃣ 순서로 붙일 것. 숙소/맛집/관광지 아이콘 사용 금지.
+- 추천형 쿼리(숙소/맛집/관광지 — 일정형 제외)는 반드시 icon을 빈값("")으로 두고, title 앞에 1️⃣ 2️⃣ 3️⃣ 4️⃣ 순서로 붙일 것. 숙소/맛집/관광지 아이콘 사용 금지.
   마지막 상황별 추천 섹션만 icon을 💡로.
+- 일정형(~일정/코스/동선/N박N일)은 이 규칙을 적용하지 말고 [일정형 쿼리 처리]만 따를 것.
 
-[섹션 구성 원칙]
+[섹션 구성 원칙 — 추천형 전용, 일정형에는 적용 금지]
 - 추천형 쿼리는 쿼리의 동행인/목적/여행스타일을 먼저 파악.
 - 섹션 제목은 단순 카테고리명이 아니라 "카테고리 (이 사람에게 왜 맞는지)" 형식으로 작성.
   예) 혼여 숙소 쿼리 →
@@ -136,19 +138,27 @@ JSON 외 다른 텍스트는 절대 출력금지.
   👉 한 줄 결론: 혼여면 역세권 비즈니스 호텔이 정답
 - 카테고리는 후기 데이터에 있는 내용 기준으로만. 없는 카테고리 만들지 말 것.
 
-[일정형 쿼리 처리]
+[일정형 쿼리 처리 — 일정형일 때 최우선, 추천형 규칙 무시]
 - ~일정, ~코스, ~동선, N박N일 키워드면 일정형으로 판단.
-- 섹션 구성: icon "🗺️", title "Day1 — 소제목" 형식. 숫자 이모지 1️⃣ 사용 금지.
+- 섹션 구성: icon "🗺️", title "Day1 — 소제목" 형식. 1️⃣·"1일차"·"2일차" 표기 금지. 반드시 Day1, Day2.
 - content 형식:
-  오전/오후/저녁 흐름으로 작성.
-  각 장소: 이모지+**장소명** → 이동수단/소요시간 포함.
-  Day 내부에 숫자 나열(1)2)3)) 금지. 줄바꿈으로 구분.
-- 일정 안에 숙소/맛집도 반드시 1개 이상 포함.
-- places_detail: 각 Day 장소 반드시 포함. 일정형도 추천형과 동일하게 필수.
-- 마지막 섹션: 💡 여행 팁 (렌터카/교통/주의사항).
+  오전 / 오후 / 저녁 흐름으로 작성 (시간대 라벨 포함).
+  각 장소: 이모지+**장소명** 한 줄 → 다음 줄에 이동수단·소요시간 (→ 또는 지하철/도보 등).
+  Day 내부에 숫자 나열(1)2)3))·- 불릿·• 금지. 줄바꿈으로만 구분.
+- 일정 전체에 🏨 숙소 또는 🍜 맛집 **장소명** 최소 1개 반드시 포함 (동선만 나열 금지).
+- places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (여행 팁 섹션만 []).
+  reviews 최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
+- 마지막 섹션은 💡 상황별추천이 아니라 💡 여행 팁으로 끝낼 것.
+- 마지막 섹션: title "💡 여행 팁" (icon "" 또는 "💡"), places_detail: []
+- 여행 팁 content 형식은 💡 상황별추천과 동일:
+  - 짧은 본문 줄 나열 (✔ 교통 / ✔ 렌터카 / ✔ 주의사항 등)
+  - 각 줄 끝 [ref:N] 필수 (후기 근거)
+  - **장소명 블록·이모지+장소·사진 형식 사용 금지**
+  - 👉 한 줄 결론 1줄 가능
 
 [places_detail 생성 기준]
-- 추천형 섹션(숙소/맛집/관광지 등)은 반드시 places_detail 배열 사용. 섹션 레벨 reviews 필드 사용 금지.
+- 추천형·일정형 Day 섹션 모두 places_detail 배열 필수. 섹션 레벨 reviews 필드 사용 금지.
+- 일정형: Day 섹션 places_detail 비우면 안 됨. content 장소 수 = places_detail 항목 수.
 - 전체 sections의 places_detail name 합(중복 제외) 최대 5개. content의 **장소명** 개수와 동일해야 함.
 - places_detail 항목 수 = content의 **장소명** 항목 수와 동일. 순서도 동일하게.
 - name: content의 **장소명**과 정확히 일치
@@ -279,6 +289,135 @@ def enrich_place_warnings(result: dict) -> None:
             inferred = infer_warnings_from_reviews(pd.get("reviews", []))
             if inferred:
                 pd["warnings"] = inferred
+
+
+ITINERARY_QUERY_RE = re.compile(
+    r"(?:일정|코스|동선|루트|여행\s*계획|당일치기|하루\s*코스|"
+    r"\d+\s*박\s*\d+\s*일|\d+박\d+일|\d+일\s*여행)",
+    re.IGNORECASE,
+)
+
+ITINERARY_MODE_BLOCK = """
+[⚠️ 이번 질문은 일정형입니다 — 아래만 최우선 적용]
+- [섹션 구성 원칙], 추천형 1️⃣ 규칙, 마지막 💡 상황별추천 규칙은 적용하지 마세요.
+- [일정형 쿼리 처리]와 [places_detail 생성 기준]을 반드시 따르세요.
+
+출력 전 자가검증:
+□ Day 섹션 title "Day1 — 소제목", icon "🗺️", 1️⃣·1일차 금지
+□ Day content: 오전/오후/저녁 + 이모지+**장소명** + 이동수단/시간. 1)2)3)·- 불릿 금지
+□ 전체에 🏨 숙소 또는 🍜 맛집 **장소명** 최소 1개
+□ 각 Day: content **장소명**마다 places_detail + reviews(최대 3) + warnings
+□ 마지막만 "💡 여행 팁", places_detail: []
+"""
+
+DAY_SECTION_TITLE_RE = re.compile(r"^(?:day\s*)?(\d+)\s*일차", re.IGNORECASE)
+DAY_TITLE_EMOJI_RE = re.compile(r"^[1-4]️⃣\s*")
+DAY_TITLE_PREFIX_RE = re.compile(r"^Day\s*(\d+)", re.IGNORECASE)
+NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s*")
+BULLET_LINE_RE = re.compile(r"^\s*•\s*")
+
+
+def is_itinerary_query(query: str) -> bool:
+    return bool(ITINERARY_QUERY_RE.search(query or ""))
+
+
+def build_system_prompt(query: str) -> str:
+    if is_itinerary_query(query):
+        return f"{SYSTEM_PROMPT}\n\n{ITINERARY_MODE_BLOCK}"
+    return SYSTEM_PROMPT
+
+
+def _normalize_day_title(title: str) -> str:
+    t = (title or "").strip()
+    t = DAY_TITLE_EMOJI_RE.sub("", t)
+    m = DAY_SECTION_TITLE_RE.match(t)
+    if m:
+        day_num = m.group(1)
+        rest = t[m.end():].strip()
+        if rest.startswith("—") or rest.startswith("-"):
+            rest = " — " + rest.lstrip("—-").strip()
+        elif rest:
+            rest = f" — {rest}"
+        return f"Day{day_num}{rest}"
+    return t
+
+
+def _clean_itinerary_line(line: str) -> str:
+    line = NUMBERED_LINE_RE.sub("", line)
+    line = BULLET_LINE_RE.sub("", line)
+    return line
+
+
+def normalize_itinerary_response(result: dict) -> None:
+    for section in result.get("sections", []):
+        title = (section.get("title") or "").strip()
+        if re.search(r"여행\s*팁", title, re.IGNORECASE):
+            section["icon"] = section.get("icon") or "💡"
+            section["places_detail"] = []
+            continue
+
+        stripped = DAY_TITLE_EMOJI_RE.sub("", title)
+        is_day = DAY_SECTION_TITLE_RE.match(stripped) or DAY_TITLE_PREFIX_RE.match(stripped)
+        if is_day:
+            section["title"] = _normalize_day_title(title)
+            section["icon"] = "🗺️"
+
+        content = section.get("content")
+        if content:
+            section["content"] = "\n".join(
+                _clean_itinerary_line(line) for line in content.split("\n")
+            )
+
+        for pd in section.get("places_detail", []):
+            warnings = pd.get("warnings") or []
+            pd["warnings"] = [
+                NUMBERED_LINE_RE.sub("", w).strip() for w in warnings
+            ]
+
+
+def collect_place_names_for_api(
+    result: dict, limit: int = 5, itinerary: bool = False
+) -> list[str]:
+    """content **장소명** + places_detail.name 수집 (최대 limit개)."""
+    seen: set[str] = set()
+    names: list[str] = []
+
+    def add(name: str) -> None:
+        n = (name or "").strip()
+        if not n or n in seen:
+            return
+        seen.add(n)
+        names.append(n)
+
+    for section in result.get("sections", []):
+        if re.search(r"여행\s*팁", section.get("title", ""), re.I):
+            continue
+        for pd in section.get("places_detail", []):
+            add(pd.get("name") or "")
+        for m in re.findall(r"\*\*(.+?)\*\*", section.get("content", "")):
+            add(m)
+
+    if itinerary and len(names) > limit:
+        def priority(name: str) -> int:
+            if re.search(r"공항|이동수단|^이동$|출국|입국|도착", name, re.I):
+                return 99
+            if re.search(
+                r"관광|신사|사찰|USJ|스튜디오|박물관|공원|타워|성|전망|이나리|유니버설",
+                name,
+                re.I,
+            ):
+                return 0
+            if re.search(r"호텔|숙소|료칸", name, re.I):
+                return 1
+            if re.search(r"맛집|식당|카페|타코|오코노미", name, re.I):
+                return 2
+            if re.search(r"쇼핑|마켓|백화점", name, re.I):
+                return 3
+            return 4
+
+        names.sort(key=priority)
+
+    return names[:limit]
 
 
 class SearchRequest(BaseModel):
@@ -618,10 +757,13 @@ async def search(req: SearchRequest):
         for i, c in enumerate(chunks)
     ])
 
+    itinerary_query = is_itinerary_query(req.query)
+    system_prompt = build_system_prompt(req.query)
+
     # 4. Gemini 답변 생성
     response = await gemini_client.aio.models.generate_content(
         model="gemini-2.5-flash",
-        contents=f"{SYSTEM_PROMPT}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
+        contents=f"{system_prompt}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
         config={"thinking_config": {"thinking_budget": 0}}
     )
 
@@ -649,13 +791,11 @@ async def search(req: SearchRequest):
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True, file=sys.stderr)
 
     enrich_place_warnings(result)
+    if itinerary_query:
+        normalize_itinerary_response(result)
 
-    # 6. content에서 장소명 추출 → Places API 호출 (최대 5개)
-    place_names = []
-    for section in result.get("sections", []):
-        matches = re.findall(r'\*\*(.+?)\*\*', section.get("content", ""))
-        place_names.extend(matches)
-    place_names = list(dict.fromkeys(place_names))[:5]
+    # 6. content·places_detail 장소명 → Places API (최대 5개)
+    place_names = collect_place_names_for_api(result, limit=5, itinerary=itinerary_query)
 
     places = []
     if place_names:
