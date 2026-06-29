@@ -55,7 +55,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - description: 2~3문장, 문장당 30~40자. 위치·분위기·특징·추천 이유 포함
 
 [content 작성 형식]
-- 일정형 Day 섹션은 이 형식을 쓰지 말고 [일정형 쿼리 처리]의 오전/오후/저녁 형식만 사용.
+- 일정형 Day 섹션은 이 형식을 쓰지 말고 [일정형 쿼리 처리] 형식만 사용.
 - 추천형 섹션(숙소/맛집/관광지 — 일정형 Day 제외): 각 장소는 아래 순서로 작성 (프론트 렌더 순서와 일치)
   1) 카테고리 이모지 + **장소명** 한 줄 (👉 소제목 사용 금지)
      이모지: 맛집🍜 / 숙소🏨 / 관광⛩️ / 쇼핑🛍️ / 교통🚆 / 동선🗺️ / 비용💰
@@ -141,12 +141,14 @@ JSON 외 다른 텍스트는 절대 출력금지.
 [일정형 쿼리 처리 — 일정형일 때 최우선, 추천형 규칙 무시]
 - ~일정, ~코스, ~동선, N박N일 키워드면 일정형으로 판단.
 - 섹션 구성: icon "🗺️", title "Day1 — 소제목" 형식. 1️⃣·"1일차"·"2일차" 표기 금지. 반드시 Day1, Day2.
-- content 형식:
-  오전 / 오후 / 저녁 흐름으로 작성 (시간대 라벨 포함).
-  각 장소: 이모지+**장소명** 한 줄 → 다음 줄에 이동수단·소요시간 (→ 또는 지하철/도보 등).
+- Day content 형식 (오전/오후/저녁 라벨 사용 금지):
+  각 장소: 이모지+**장소명** 한 줄 → 다음 줄에 이동수단·소요시간.
+  **장소명 줄(이모지+**장소명**)에는 [ref:N] 절대 금지.** [ref:N]은 이동/설명 줄에만.
   Day 내부에 숫자 나열(1)2)3))·- 불릿·• 금지. 줄바꿈으로만 구분.
-- 일정 전체에 🏨 숙소 또는 🍜 맛집 **장소명** 최소 1개 반드시 포함 (동선만 나열 금지).
-- places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (여행 팁 섹션만 []).
+- Day 섹션 content에 🏨 숙소 넣지 말 것. 숙소는 별도 섹션으로 분리.
+- Day 섹션 다음·여행 팁 직전에 icon "🏨", title "🏨 숙소 추천" 섹션 1개 필수 (추천형 장소 블록 형식).
+- Day에는 🍜 맛집·⛩️ 관광·🚆 이동 포함 가능.
+- places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (여행 팁·숙소 섹션은 places_detail 필수).
   reviews 최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
 - 마지막 섹션은 💡 상황별추천이 아니라 💡 여행 팁으로 끝낼 것.
 - 마지막 섹션: title "💡 여행 팁" (icon "" 또는 "💡"), places_detail: []
@@ -304,8 +306,8 @@ ITINERARY_MODE_BLOCK = """
 
 출력 전 자가검증:
 □ Day 섹션 title "Day1 — 소제목", icon "🗺️", 1️⃣·1일차 금지
-□ Day content: 오전/오후/저녁 + 이모지+**장소명** + 이동수단/시간. 1)2)3)·- 불릿 금지
-□ 전체에 🏨 숙소 또는 🍜 맛집 **장소명** 최소 1개
+□ Day content: 오전/오후/저녁 라벨 없이 이모지+**장소명** + 이동 줄. 장소명 줄 [ref:N] 금지
+□ Day에 🏨 숙소 없음 → "🏨 숙소 추천" 섹션 별도
 □ 각 Day: content **장소명**마다 places_detail + reviews(최대 3) + warnings
 □ 마지막만 "💡 여행 팁", places_detail: []
 """
@@ -315,6 +317,14 @@ DAY_TITLE_EMOJI_RE = re.compile(r"^[1-4]️⃣\s*")
 DAY_TITLE_PREFIX_RE = re.compile(r"^Day\s*(\d+)", re.IGNORECASE)
 NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s*")
 BULLET_LINE_RE = re.compile(r"^\s*•\s*")
+TIME_LABEL_RE = re.compile(
+    r"^(오전|오후|저녁|아침|점심|밤)(?:\s*[\/·]\s*(오전|오후|저녁|아침|점심|밤))*$",
+    re.IGNORECASE,
+)
+INLINE_REF_RE = re.compile(r"\s*(?:\[ref:\d+\])+\s*")
+PLACE_EMOJI_PREFIX = re.compile(
+    r"^[\s]*(?:[\U0001F300-\U0001FAFF\U00002600-\U000027BF]|🗺️|🏨|🍜|⛩️|🚆|🛍️|💰|📍)"
+)
 
 
 def is_itinerary_query(query: str) -> bool:
@@ -343,9 +353,61 @@ def _normalize_day_title(title: str) -> str:
 
 
 def _clean_itinerary_line(line: str) -> str:
+    stripped = line.strip()
+    if TIME_LABEL_RE.match(stripped):
+        return ""
     line = NUMBERED_LINE_RE.sub("", line)
     line = BULLET_LINE_RE.sub("", line)
+    t = line.strip()
+    if t and (PLACE_EMOJI_PREFIX.match(t) or re.match(r"^\s*\*\*", t)):
+        line = INLINE_REF_RE.sub(" ", t)
     return line
+
+
+def _is_lodging_section(section: dict) -> bool:
+    title = section.get("title") or ""
+    return section.get("icon") == "🏨" or bool(re.search(r"숙소", title, re.I))
+
+
+def _is_day_section_title(title: str) -> bool:
+    t = (title or "").strip()
+    stripped = DAY_TITLE_EMOJI_RE.sub("", t)
+    return bool(DAY_SECTION_TITLE_RE.match(stripped) or DAY_TITLE_PREFIX_RE.match(stripped))
+
+
+def _place_photo_priority(name: str) -> int:
+    if re.search(r"공항|이동수단|^이동$|출국|입국|도착", name, re.I):
+        return 99
+    if re.search(
+        r"관광|신사|사찰|USJ|스튜디오|박물관|공원|타워|성|전망|이나리|유니버설|폭포|해변|계곡|온천|폭",
+        name,
+        re.I,
+    ):
+        return 0
+    if re.search(r"쇼핑|마켓|백화점", name, re.I):
+        return 1
+    if re.search(r"맛집|식당|카페|타코|오코노미", name, re.I):
+        return 2
+    if re.search(r"호텔|숙소|료칸", name, re.I):
+        return 3
+    return 2
+
+
+def _section_place_names(section: dict) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        n = (name or "").strip()
+        if n and n not in seen:
+            seen.add(n)
+            names.append(n)
+
+    for pd in section.get("places_detail", []):
+        add(pd.get("name") or "")
+    for m in re.findall(r"\*\*(.+?)\*\*", section.get("content", "")):
+        add(m)
+    return names
 
 
 def normalize_itinerary_response(result: dict) -> None:
@@ -364,9 +426,8 @@ def normalize_itinerary_response(result: dict) -> None:
 
         content = section.get("content")
         if content:
-            section["content"] = "\n".join(
-                _clean_itinerary_line(line) for line in content.split("\n")
-            )
+            cleaned = [_clean_itinerary_line(line) for line in content.split("\n")]
+            section["content"] = "\n".join(line for line in cleaned if line.strip())
 
         for pd in section.get("places_detail", []):
             warnings = pd.get("warnings") or []
@@ -379,6 +440,58 @@ def collect_place_names_for_api(
     result: dict, limit: int = 5, itinerary: bool = False
 ) -> list[str]:
     """content **장소명** + places_detail.name 수집 (최대 limit개)."""
+    if itinerary:
+        day_attractions: list[str] = []
+        rest_pool: list[str] = []
+        lodging_pool: list[str] = []
+        seen_sections: set[str] = set()
+
+        for section in result.get("sections", []):
+            title = section.get("title") or ""
+            if re.search(r"여행\s*팁", title, re.I):
+                continue
+            names = _section_place_names(section)
+            if _is_lodging_section(section):
+                lodging_pool.extend(names)
+                continue
+            if _is_day_section_title(title):
+                primary = None
+                for prio in (0, 1, 2):
+                    candidates = [n for n in names if _place_photo_priority(n) == prio]
+                    if candidates:
+                        primary = candidates[0]
+                        break
+                if primary:
+                    day_attractions.append(primary)
+                for n in names:
+                    if _place_photo_priority(n) < 99 and n not in seen_sections:
+                        seen_sections.add(n)
+                        rest_pool.append(n)
+            else:
+                for n in names:
+                    if _place_photo_priority(n) < 99 and n not in seen_sections:
+                        seen_sections.add(n)
+                        rest_pool.append(n)
+
+        picked: list[str] = []
+        seen: set[str] = set()
+
+        def pick(name: str) -> None:
+            n = (name or "").strip()
+            if n and n not in seen and len(picked) < limit:
+                seen.add(n)
+                picked.append(n)
+
+        for n in day_attractions:
+            pick(n)
+        rest_pool.sort(key=_place_photo_priority)
+        for n in rest_pool:
+            pick(n)
+        lodging_pool.sort(key=_place_photo_priority)
+        for n in lodging_pool:
+            pick(n)
+        return picked[:limit]
+
     seen: set[str] = set()
     names: list[str] = []
 
@@ -397,25 +510,8 @@ def collect_place_names_for_api(
         for m in re.findall(r"\*\*(.+?)\*\*", section.get("content", "")):
             add(m)
 
-    if itinerary and len(names) > limit:
-        def priority(name: str) -> int:
-            if re.search(r"공항|이동수단|^이동$|출국|입국|도착", name, re.I):
-                return 99
-            if re.search(
-                r"관광|신사|사찰|USJ|스튜디오|박물관|공원|타워|성|전망|이나리|유니버설",
-                name,
-                re.I,
-            ):
-                return 0
-            if re.search(r"호텔|숙소|료칸", name, re.I):
-                return 1
-            if re.search(r"맛집|식당|카페|타코|오코노미", name, re.I):
-                return 2
-            if re.search(r"쇼핑|마켓|백화점", name, re.I):
-                return 3
-            return 4
-
-        names.sort(key=priority)
+    if len(names) > limit:
+        names.sort(key=_place_photo_priority)
 
     return names[:limit]
 
