@@ -232,6 +232,57 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
         }
 
 
+def format_youtube_item(v: dict) -> dict:
+    """youtube_chunks.title 컬럼 값 사용."""
+    title = (v.get("title") or "").strip()
+    url = (v.get("url") or "").strip()
+    return {
+        "title": title or "YouTube 영상",
+        "url": url,
+    }
+
+
+async def enrich_youtube_titles(videos: list[dict]) -> list[dict]:
+    """RPC 결과에 title이 없으면 youtube_chunks 테이블에서 url 기준으로 보강."""
+    if not videos:
+        return videos
+
+    urls = list(dict.fromkeys(
+        (v.get("url") or "").strip() for v in videos if (v.get("url") or "").strip()
+    ))
+    if not urls:
+        return videos
+
+    title_by_url: dict[str, str] = {}
+    try:
+        for i in range(0, len(urls), 40):
+            batch = urls[i:i + 40]
+            db_res = await asyncio.to_thread(
+                lambda links=batch: supabase.table("youtube_chunks")
+                .select("url,title")
+                .in_("url", links)
+                .execute()
+            )
+            for row in db_res.data or []:
+                url = (row.get("url") or "").strip()
+                title = (row.get("title") or "").strip()
+                if url and title:
+                    title_by_url[url] = title
+    except Exception as e:
+        print(
+            f"youtube_chunks title 조회 실패: {e}",
+            flush=True,
+            file=sys.stderr,
+        )
+
+    enriched: list[dict] = []
+    for v in videos:
+        url = (v.get("url") or "").strip()
+        title = (v.get("title") or "").strip() or title_by_url.get(url, "")
+        enriched.append({**v, "title": title, "url": url})
+    return enriched
+
+
 @app.post("/search")
 async def search(req: SearchRequest):
     # 1. 쿼리 임베딩
@@ -267,6 +318,7 @@ async def search(req: SearchRequest):
             }).execute()
         )
         youtube_videos = youtube_res.data or []
+        youtube_videos = await enrich_youtube_titles(youtube_videos)
     except Exception as e:
         print(
             f"match_youtube_videos 실패 (후기 검색은 계속): {e}",
@@ -283,13 +335,10 @@ async def search(req: SearchRequest):
             "follow_up": [],
             "sources": [],
             "youtube_videos": [
-                {
-                    "title": v.get("search_query"),
-                    "url": v.get("url"),
-                    "summary": v.get("summary")
-                }
+                format_youtube_item(v)
                 for v in youtube_videos
-            ] if youtube_videos else []
+                if (v.get("url") or "").strip()
+            ],
         }
 
     # 3. 컨텍스트 구성
@@ -587,13 +636,10 @@ async def search(req: SearchRequest):
 
     # 유튜브 링크 추가
     result["youtube_videos"] = [
-        {
-            "title": v.get("search_query"),
-            "url": v.get("url"),
-            "summary": v.get("summary")
-        }
+        format_youtube_item(v)
         for v in youtube_videos
-    ] if youtube_videos else []
+        if (v.get("url") or "").strip()
+    ]
 
     return result
 
