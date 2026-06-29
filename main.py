@@ -183,6 +183,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - warnings: **negative reviews에서 주의사항을 15자 이내로 요약**하여 반드시 추출. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
 - 팁·결론만 있는 섹션(장소 없음)은 places_detail: []
 
+
 [reviews 생성 기준]
 - 실제 경험 서술 문장만 인용. (~했어요, ~였어요, ~좋았어요, ~별로였어요)
 - 아래는 reviews에 넣지 말 것:
@@ -190,6 +191,27 @@ JSON 외 다른 텍스트는 절대 출력금지.
   ✗ 시간표형 ("8시 저녁ㅡ 돈요시", "1)2)3)" 형태)
   ✗ 일정 나열형 (장소명만 나열)
   ✗ 타인 의견 인용 ("~하라고 하더라구요")
+  ✗ 계획/의도 서술 ("~할 예정이에요", "~넣고 싶어요")
+  ✗ 조언/추천만 있는 문장 ("~하시는게 좋아요", "~추천드려요")
+  ✗ 50자 미만 짧은 문장 (맥락 없는 단편 정보)
+- 퀄리티 좋은 후기 기준:
+  ✔ 구체적 경험 ("웨이팅 30분 기다렸는데 그만한 가치 있었어요")
+  ✔ 감정/느낌 포함 ("부모님이 너무 좋아하셨어요")
+  ✔ 비교/대조 ("다른 곳보다 여기가 훨씬 나았어요")
+  ✔ 구체적 디테일 ("2층 좌식 테이블에 앉았는데 아이가 편해했어요")
+- sentiment 판단 기준:
+  positive:
+    ✔ 만족/추천 표현 ("좋았어요", "추천해요", "또 가고 싶어요")
+    ✔ 구체적 장점 ("뷰가 정말 좋았어요", "직원이 친절했어요")
+    ✔ 부모님/동행 만족 ("부모님이 너무 좋아하셨어요")
+  negative:
+    ✔ 실망/비추 표현 ("별로였어요", "다시는 안 갈 것 같아요")
+    ✔ 구체적 단점 ("계단이 너무 많아서 힘들었어요")
+    ✔ 아쉬운 경험 ("웨이팅이 너무 길었어요", "가격 대비 아쉬웠어요")
+  negative 금지:
+    ✗ 질문형 우려 ("~힘들지 않을까요?")
+    ✗ 타인 전달 ("~별로라고 하더라구요")
+    ✗ 단순 조건 제시 ("~하면 괜찮을 것 같아요")
 
 
 [warning 생성 기준 — places_detail.warnings]
@@ -606,6 +628,13 @@ def collect_place_names_for_api(
                     if candidates:
                         primary = candidates[0]
                         break
+                if not primary:
+                    eligible = sorted(
+                        [n for n in names if _place_photo_priority(n) < 99],
+                        key=_place_photo_priority,
+                    )
+                    if eligible:
+                        primary = eligible[0]
                 if primary:
                     day_attractions.append(primary)
                 for n in names:
@@ -620,22 +649,26 @@ def collect_place_names_for_api(
 
         picked: list[str] = []
         seen: set[str] = set()
+        # Day마다 사진 1장 이상 → Day 수만큼 API 호출 확보
+        effective_limit = max(limit, len(day_attractions))
 
-        def pick(name: str) -> None:
+        def pick(name: str, *, required: bool = False) -> None:
             n = (name or "").strip()
-            if n and n not in seen and len(picked) < limit:
+            if not n or n in seen:
+                return
+            if required or len(picked) < effective_limit:
                 seen.add(n)
                 picked.append(n)
 
         for n in day_attractions:
-            pick(n)
+            pick(n, required=True)
         lodging_pool.sort(key=_place_photo_priority)
         for n in lodging_pool:
             pick(n)
         rest_pool.sort(key=_place_photo_priority)
         for n in rest_pool:
             pick(n)
-        return picked[:limit]
+        return picked
 
     seen: set[str] = set()
     names: list[str] = []
@@ -659,6 +692,16 @@ def collect_place_names_for_api(
         names.sort(key=_place_photo_priority)
 
     return names[:limit]
+
+
+def extract_map_title(query: str, city: str = None) -> str:
+    keywords = ["2박3일", "3박4일", "일정", "숙소", "맛집", "코스"]
+    title = city or ""
+    for kw in keywords:
+        if kw in query:
+            title = f"{title} {kw}".strip()
+            break
+    return title or query[:15]
 
 
 class SearchRequest(BaseModel):
@@ -1035,7 +1078,7 @@ async def search(req: SearchRequest):
         normalize_itinerary_response(result)
     enrich_place_warnings(result)
 
-    # 6. content·places_detail 장소명 → Places API (최대 5개)
+    # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
     place_names = collect_place_names_for_api(result, limit=5, itinerary=itinerary_query)
 
     places = []
@@ -1196,6 +1239,8 @@ async def search(req: SearchRequest):
         for v in youtube_videos
         if (v.get("url") or "").strip()
     ]
+
+    result["map_title"] = extract_map_title(req.query, req.city)
 
     return result
 
