@@ -1323,12 +1323,7 @@ async def search(req: SearchRequest):
         unique_sources = []
         for source in result["sources"]:
             link = source.get("link")
-            try:
-                sid = int(source.get("id"))
-            except (TypeError, ValueError):
-                sid = None
-
-            if link and link in seen_links and sid not in cited_refs:
+            if link and link in seen_links:
                 continue
             if link:
                 seen_links.add(link)
