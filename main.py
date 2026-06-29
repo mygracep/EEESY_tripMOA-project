@@ -232,8 +232,13 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
         }
 
 
+def youtube_video_id(url: str) -> str | None:
+    m = re.search(r"(?:youtube\.com/watch\?v=|youtu\.be/)([\w-]{11})", url or "")
+    return m.group(1) if m else None
+
+
 def format_youtube_item(v: dict) -> dict:
-    """youtube_chunks.title 컬럼 값 사용."""
+    """youtube_videos.title 컬럼 값 사용."""
     title = (v.get("title") or "").strip()
     url = (v.get("url") or "").strip()
     return {
@@ -243,7 +248,7 @@ def format_youtube_item(v: dict) -> dict:
 
 
 async def enrich_youtube_titles(videos: list[dict]) -> list[dict]:
-    """RPC 결과에 title이 없으면 youtube_chunks 테이블에서 url 기준으로 보강."""
+    """RPC 결과에 title이 없으면 youtube_videos 테이블에서 url/영상ID로 보강."""
     if not videos:
         return videos
 
@@ -254,23 +259,56 @@ async def enrich_youtube_titles(videos: list[dict]) -> list[dict]:
         return videos
 
     title_by_url: dict[str, str] = {}
+    title_by_id: dict[str, str] = {}
+
+    def register_title(url: str, title: str) -> None:
+        if not url or not title:
+            return
+        title_by_url[url.strip()] = title
+        vid = youtube_video_id(url)
+        if vid:
+            title_by_id[vid] = title
+
+    def lookup_title(url: str, current: str) -> str:
+        if current:
+            return current
+        if url in title_by_url:
+            return title_by_url[url]
+        vid = youtube_video_id(url)
+        if vid and vid in title_by_id:
+            return title_by_id[vid]
+        return ""
+
     try:
         for i in range(0, len(urls), 40):
             batch = urls[i:i + 40]
             db_res = await asyncio.to_thread(
-                lambda links=batch: supabase.table("youtube_chunks")
+                lambda links=batch: supabase.table("youtube_videos")
                 .select("url,title")
                 .in_("url", links)
                 .execute()
             )
             for row in db_res.data or []:
-                url = (row.get("url") or "").strip()
-                title = (row.get("title") or "").strip()
-                if url and title:
-                    title_by_url[url] = title
+                register_title(row.get("url") or "", (row.get("title") or "").strip())
+
+        # url 문자열이 조금 달라도(youtu.be 등) video id로 한 번 더 조회
+        missing_ids = list(dict.fromkeys(
+            youtube_video_id(u) for u in urls
+            if youtube_video_id(u) and not lookup_title(u, "")
+        ))
+        for vid in missing_ids[:10]:
+            db_res = await asyncio.to_thread(
+                lambda video_id=vid: supabase.table("youtube_videos")
+                .select("url,title")
+                .ilike("url", f"%{video_id}%")
+                .limit(1)
+                .execute()
+            )
+            for row in db_res.data or []:
+                register_title(row.get("url") or "", (row.get("title") or "").strip())
     except Exception as e:
         print(
-            f"youtube_chunks title 조회 실패: {e}",
+            f"youtube_videos title 조회 실패: {e}",
             flush=True,
             file=sys.stderr,
         )
@@ -278,7 +316,7 @@ async def enrich_youtube_titles(videos: list[dict]) -> list[dict]:
     enriched: list[dict] = []
     for v in videos:
         url = (v.get("url") or "").strip()
-        title = (v.get("title") or "").strip() or title_by_url.get(url, "")
+        title = lookup_title(url, (v.get("title") or "").strip())
         enriched.append({**v, "title": title, "url": url})
     return enriched
 
