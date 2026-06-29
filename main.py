@@ -140,13 +140,15 @@ JSON 외 다른 텍스트는 절대 출력금지.
 
 [일정형 쿼리 처리 — 일정형일 때 최우선, 추천형 규칙 무시]
 - ~일정, ~코스, ~동선, N박N일 키워드면 일정형으로 판단.
-- 섹션 구성: icon "🗺️", title "Day1 — 소제목" 형식. 1️⃣·"1일차"·"2일차" 표기 금지. 반드시 Day1, Day2.
+- 섹션 구성: icon "" (빈값), title "DAY1 — 소제목" 형식. 1️⃣·"1일차"·Day1 소문자 금지. 반드시 DAY1, DAY2.
 - Day content 형식 (오전/오후/저녁 라벨 사용 금지):
-  각 장소: 이모지+**장소명** 한 줄 → 다음 줄에 이동수단·소요시간.
+  각 장소: 이모지+**실제 장소명** 한 줄 → 다음 줄에 이동수단·소요시간(약 N분/N시간 필수).
+  **카테고리만 있는 줄 금지** (예: "점심 및 쇼핑", "숙소 체크인" — 반드시 **후지노미야 OO호텔** 등 실명).
   **장소명 줄(이모지+**장소명**)에는 [ref:N] 절대 금지.** [ref:N]은 이동/설명 줄에만.
+  **같은 Day에서 동일 **장소명** 반복 금지.** 재방문·이동은 첫 블록 설명 줄에 합칠 것 (🚆 렌터카 반납 후 출국, 약 30분).
   Day 내부에 숫자 나열(1)2)3))·- 불릿·• 금지. 줄바꿈으로만 구분.
 - Day 섹션 content에 🏨 숙소 넣지 말 것. 숙소는 별도 섹션으로 분리.
-- Day 섹션 다음·여행 팁 직전에 icon "🏨", title "🏨 숙소 추천" 섹션 1개 필수 (추천형 장소 블록 형식).
+- Day 섹션 다음·여행 팁 직전에 icon "🏨", title "숙소 추천" (title에 🏨 이모지 중복 금지, icon만 사용).
 - Day에는 🍜 맛집·⛩️ 관광·🚆 이동 포함 가능.
 - places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (여행 팁·숙소 섹션은 places_detail 필수).
   reviews 최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
@@ -165,17 +167,29 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - places_detail 항목 수 = content의 **장소명** 항목 수와 동일. 순서도 동일하게.
 - name: content의 **장소명**과 정확히 일치
 - description: 2~3문장, 문장당 30~40자. 위치, 분위기, 특징, 추천 이유 포함. [ref:N] 포함 가능.
-- reviews: 해당 장소에 대한 후기만. 다른 장소 후기 섞지 말 것.
-- 장소당 실후기 **최대 3개**. 후기 데이터에 있으면 **가능한 3개**까지 채울 것 (1~2개로 줄이지 말 것).
+- reviews: 해당 장소 **직접 방문·체험 후기**만. 다른 장소 후기 섞지 말 것.
+- **reviews 제외:** 질문·문의(?/궁금/할까요), 일정·동선 나열(/, ->), 의견·제안만(~포기하면, ~넣고 싶)
+- **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 추천/비추, 아쉬운 **경험**
+- 장소당 실후기 **최대 3개**. 위 기준 통과 후기만. 가능한 3개까지 채울 것.
 - 후기 원문 그대로 인용, 요약 금지.
-- 반드시 부정적 후기 1개 이상 포함 (없으면 아쉬운 점)
+- 부정 후기 1개 이상 포함 (질문형·의견형 negative 금지, 실제 아쉬운 **경험**만)
 - sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
 - warnings: **negative reviews에서 주의사항을 15자 이내로 요약**하여 반드시 추출. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
 - 팁·결론만 있는 섹션(장소 없음)은 places_detail: []
 
 [warning 생성 기준 — places_detail.warnings]
-- **negative reviews의 주의·아쉬운 점을 반드시 warnings로 변환** (후기에 있으면 빈 배열 금지)
-- 막차/영업종료/예약마감/현금only/입장제한/대기/휴무/공간좁음 등
+- **negative reviews의 주의·아쉬운 점을 warnings로 변환** (아래 유형 우선, 실제 방문 경험 기반)
+- 아래 케이스 위주로 warning 생성. **실질적 주의·아쉬운 점**이면 15자 이내로 요약하여 포함.
+  ✔ 예약/티켓 필수
+  ✔ 영업시간/휴무일
+  ✔ 교통/이동 실질적 주의
+  ✔ 신체 부담 (계단/경사)
+  ✔ 현금only
+  ✔ 직원 서비스 아쉬움
+  ✔ 위생 주의
+  ✔ 혼잡 주의
+  ✔ 가격 대비 아쉬움
+- 개인 의견, 일정 부족 느낌, 질문형 문장 → warning 생성 금지
 - 각 항목 **15자 이내** 키워드·구 형태. ~해요/~합니다 등 **종결 어미 금지**
 - 해당 negative review의 ref를 [ref:N]으로 표기
 - 예) negative "닌텐도 월드는 타이밍 티켓 없으면 못 들어가요" → warnings: ["타이밍 티켓 사전예약 [ref:1]"]
@@ -226,7 +240,101 @@ CAUTION_RULES = [
     (re.compile(r"줄\s|대기|웨이팅|기다"), "대기 시간 길어요"),
     (re.compile(r"좁|빡빡|캐리어"), "공간·수납 주의"),
     (re.compile(r"일찍|아침\s*일찍|오픈\s*런"), "오픈런·이른 방문"),
+    (re.compile(r"불친절|불쾌|무뚝뚝|직원.*별로"), "직원 서비스 아쉬움"),
+    (re.compile(r"끈적|눅눅|위생|더럽|지저분"), "위생 주의"),
+    (re.compile(r"맵|짜|달|느끼|비려"), "맛 호불호 있음"),
+    (re.compile(r"비싸|가성비.*별로|가격.*아깝"), "가격 대비 아쉬움"),
+    (re.compile(r"시끄|복잡|사람.*많|붐비"), "혼잡할 수 있음"),
+    (re.compile(r"교통|이동|주차|운전|운행|셔틀|shuttle", re.I), "교통·이동 주의"),
+    (re.compile(r"계단|경사|힘들|체력|몸\s*아"), "신체 부담 주의"),
 ]
+
+SCHEDULE_FEELING_RE = re.compile(
+    r"시간.*(없|부족|짧|너무)|체류.*짧|너무\s*없|일정.*부족|촉박|포기하면|넣고\s*싶",
+    re.I,
+)
+
+QUESTION_RE = re.compile(
+    r"[?？]|궁금|할까|어떻게|알려|가능할까|가능하지|과한|넣고\s*싶|포기하면|이견|죠\?|까요|을까|를까|인지\s*궁금",
+    re.I,
+)
+ITINERARY_DUMP_RE = re.compile(
+    r"(?:/|->|→).*(?:/|->|→)|주차장-|복귀.*취침|저녁식사후|하부\s*무료",
+    re.I,
+)
+
+
+def is_valid_review_text(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 10:
+        return False
+    if QUESTION_RE.search(t):
+        return False
+    if ITINERARY_DUMP_RE.search(t):
+        return False
+    if t.count("/") >= 3:
+        return False
+    if re.search(r"폭포.*/.*호수|호수.*/.*폭포", t, re.I):
+        return False
+    return True
+
+
+def filter_valid_reviews(reviews: list) -> list:
+    out = []
+    for r in reviews or []:
+        if not isinstance(r, dict):
+            continue
+        if is_valid_review_text(r.get("text", "")):
+            out.append(r)
+        if len(out) >= 3:
+            break
+    return out
+
+
+def _strip_warning_endings(body: str) -> str:
+    body = re.sub(
+        r"(?:입니다|습니다|해요|돼요|있어요|없어요|주세요|에요|예요|네요|같아요)[.!]?$",
+        "",
+        body,
+    )
+    body = re.sub(r"[.!?…]+$", "", body).strip()
+    return re.sub(r"(?:없는\s*건?|너무\s*없)$", "", body).strip()
+
+
+def _warning_clause_from_review(text: str, max_len: int = 15) -> str:
+    clause = re.sub(r"\[ref:\d+\]", "", text.replace("**", "")).split("\n")[0]
+    clause = re.split(r"[.。!?]", clause)[0].strip()
+    if len(clause) < 4:
+        return ""
+    if QUESTION_RE.search(clause) or SCHEDULE_FEELING_RE.search(clause):
+        return ""
+    clause = _strip_warning_endings(clause)
+    if len(clause) < 4:
+        return ""
+    return clause[:max_len]
+
+
+def sanitize_warning_text(text: str) -> str:
+    suffix_m = re.search(r"(\s*(?:\[ref:\d+\])+)\s*$", text or "")
+    suffix = suffix_m.group(1) if suffix_m else ""
+    body = INLINE_REF_RE.sub(" ", (text or "").replace("**", "")).strip()
+    body = re.sub(r"^⚠️\s*", "", body).strip()
+    if not body:
+        return suffix.strip()
+
+    for pattern, label in CAUTION_RULES:
+        if pattern.search(body):
+            return f"{label}{suffix}"
+
+    body = _strip_warning_endings(body)
+
+    if QUESTION_RE.search(body) or SCHEDULE_FEELING_RE.search(body):
+        return f"주의사항 확인{suffix}" if suffix else ""
+
+    if len(body) > 16:
+        body = body[:15].rstrip()
+
+    return f"{body}{suffix}" if body else suffix.strip()
 
 
 def _ref_suffix_for_review(review: dict, text: str) -> str:
@@ -235,14 +343,6 @@ def _ref_suffix_for_review(review: dict, text: str) -> str:
         return f" [ref:{ref}]"
     m = re.search(r"(\s*(?:\[ref:\d+\])+)\s*$", text)
     return m.group(1) if m else ""
-
-
-def _first_clause(text: str, max_len: int = 18) -> str:
-    clause = re.sub(r"\[ref:\d+\]", "", text.replace("**", "")).split("\n")[0]
-    clause = re.split(r"[.。!?]", clause)[0].strip()
-    if len(clause) < 4:
-        return ""
-    return clause[:max_len]
 
 
 def infer_warnings_from_reviews(reviews: list) -> list[str]:
@@ -255,8 +355,10 @@ def infer_warnings_from_reviews(reviews: list) -> list[str]:
     for review in reviews:
         if review.get("sentiment") != "negative":
             continue
-
         text = review.get("text") or ""
+        if not is_valid_review_text(text):
+            continue
+
         ref_suffix = _ref_suffix_for_review(review, text)
         matched = False
 
@@ -270,7 +372,7 @@ def infer_warnings_from_reviews(reviews: list) -> list[str]:
                 break
 
         if not matched:
-            clause = _first_clause(text)
+            clause = _warning_clause_from_review(text)
             if clause:
                 w = f"{clause}{ref_suffix}"
                 if w not in seen:
@@ -283,14 +385,28 @@ def infer_warnings_from_reviews(reviews: list) -> list[str]:
     return out[:2]
 
 
+def postprocess_place_detail(pd: dict) -> None:
+    pd["reviews"] = filter_valid_reviews(pd.get("reviews", []))
+    raw_warnings = pd.get("warnings") or []
+    pd["warnings"] = [
+        w
+        for w in (
+            sanitize_warning_text(NUMBERED_LINE_RE.sub("", w).strip())
+            for w in raw_warnings
+            if w
+        )
+        if w
+    ]
+    if not pd["warnings"]:
+        inferred = infer_warnings_from_reviews(pd.get("reviews", []))
+        if inferred:
+            pd["warnings"] = inferred
+
+
 def enrich_place_warnings(result: dict) -> None:
     for section in result.get("sections", []):
         for pd in section.get("places_detail", []):
-            if pd.get("warnings"):
-                continue
-            inferred = infer_warnings_from_reviews(pd.get("reviews", []))
-            if inferred:
-                pd["warnings"] = inferred
+            postprocess_place_detail(pd)
 
 
 ITINERARY_QUERY_RE = re.compile(
@@ -305,9 +421,9 @@ ITINERARY_MODE_BLOCK = """
 - [일정형 쿼리 처리]와 [places_detail 생성 기준]을 반드시 따르세요.
 
 출력 전 자가검증:
-□ Day 섹션 title "Day1 — 소제목", icon "🗺️", 1️⃣·1일차 금지
-□ Day content: 오전/오후/저녁 라벨 없이 이모지+**장소명** + 이동 줄. 장소명 줄 [ref:N] 금지
-□ Day에 🏨 숙소 없음 → "🏨 숙소 추천" 섹션 별도
+□ Day 섹션 title "DAY1 — 소제목", icon "" (이모지 없음)
+□ Day content: 실제 **장소명**만. 카테고리 줄·동일 장소명 중복 금지. 이동 줄에 약 N분/N시간 필수
+□ Day에 🏨 숙소 없음 → icon 🏨 + title "숙소 추천" 섹션 별도
 □ 각 Day: content **장소명**마다 places_detail + reviews(최대 3) + warnings
 □ 마지막만 "💡 여행 팁", places_detail: []
 """
@@ -344,12 +460,21 @@ def _normalize_day_title(title: str) -> str:
     if m:
         day_num = m.group(1)
         rest = t[m.end():].strip()
-        if rest.startswith("—") or rest.startswith("-"):
-            rest = " — " + rest.lstrip("—-").strip()
-        elif rest:
-            rest = f" — {rest}"
-        return f"Day{day_num}{rest}"
-    return t
+    else:
+        m = DAY_TITLE_PREFIX_RE.match(t)
+        if m:
+            day_num = m.group(1)
+            rest = t[m.end():].strip()
+        else:
+            return t
+
+    if rest.startswith("—") or rest.startswith("-"):
+        rest = " — " + rest.lstrip("—-").strip()
+    elif rest:
+        rest = f" — {rest}"
+    else:
+        rest = ""
+    return f"DAY{day_num}{rest}"
 
 
 def _clean_itinerary_line(line: str) -> str:
@@ -418,11 +543,18 @@ def normalize_itinerary_response(result: dict) -> None:
             section["places_detail"] = []
             continue
 
+        if _is_lodging_section(section):
+            section["icon"] = "🏨"
+            section["title"] = re.sub(r"^🏨\s*", "", title).strip() or "숙소 추천"
+            if not section["title"].startswith("숙소"):
+                section["title"] = "숙소 추천"
+            continue
+
         stripped = DAY_TITLE_EMOJI_RE.sub("", title)
         is_day = DAY_SECTION_TITLE_RE.match(stripped) or DAY_TITLE_PREFIX_RE.match(stripped)
         if is_day:
             section["title"] = _normalize_day_title(title)
-            section["icon"] = "🗺️"
+            section["icon"] = ""
 
         content = section.get("content")
         if content:
@@ -430,10 +562,7 @@ def normalize_itinerary_response(result: dict) -> None:
             section["content"] = "\n".join(line for line in cleaned if line.strip())
 
         for pd in section.get("places_detail", []):
-            warnings = pd.get("warnings") or []
-            pd["warnings"] = [
-                NUMBERED_LINE_RE.sub("", w).strip() for w in warnings
-            ]
+            postprocess_place_detail(pd)
 
 
 def collect_place_names_for_api(
@@ -886,9 +1015,9 @@ async def search(req: SearchRequest):
     print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True, file=sys.stderr)
 
-    enrich_place_warnings(result)
     if itinerary_query:
         normalize_itinerary_response(result)
+    enrich_place_warnings(result)
 
     # 6. content·places_detail 장소명 → Places API (최대 5개)
     place_names = collect_place_names_for_api(result, limit=5, itinerary=itinerary_query)
