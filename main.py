@@ -172,8 +172,8 @@ null:
 
 [sources 생성 기준]
 - 답변에서 [ref:N]으로 실제 인용한 청크만 포함. 최대 5개.
-- title은 반드시 [제목: ...] 에서 가져올 것. 본문 내용 절대 금지.
-- [제목: ...] 이 없거나 질문 형태의 글이면 title을 "네이버 카페 후기"로 표기할 것.
+- title은 참고 후기 헤더의 [제목: ...] 값을 그대로 복사. 본문 내용으로 제목 만들기 금지.
+- [제목: ...]이 비어 있으면 title을 빈 문자열로 두고, 서버가 보정함. "네이버 카페 후기" 등 임의 fallback 금지.
 
 
 [follow_up]
@@ -243,18 +243,29 @@ async def search(req: SearchRequest):
     query_vector = result.embeddings[0].values
 
     # 2. 벡터 검색
-    res = await asyncio.to_thread(
-        lambda: supabase.rpc("match_travel_chunks", {
-            "query_embedding": query_vector,
-            "match_threshold": req.match_threshold,
-            "match_count": req.match_count,
-            "filter_city": req.city,
-            "filter_category": req.category,
-            "filter_travel_style": req.travel_style
-        }).execute()
+    res, youtube_res = await asyncio.gather(
+        asyncio.to_thread(
+            lambda: supabase.rpc("match_travel_chunks", {
+                "query_embedding": query_vector,
+                "match_threshold": req.match_threshold,
+                "match_count": req.match_count,
+                "filter_city": req.city,
+                "filter_category": req.category,
+                "filter_travel_style": req.travel_style
+            }).execute()
+        ),
+        asyncio.to_thread(
+            lambda: supabase.rpc("match_youtube_videos", {
+                "query_embedding": query_vector,
+                "match_threshold": 0.6,
+                "match_count": 3,
+                "filter_city": req.city
+            }).execute()
+        ),
     )
 
     chunks = res.data
+    youtube_videos = youtube_res.data or []
 
     if not chunks:
         return {
@@ -263,7 +274,15 @@ async def search(req: SearchRequest):
             "warning": [],
             "places": None,
             "follow_up": [],
-            "sources": []
+            "sources": [],
+            "youtube_videos": [
+                {
+                    "title": v.get("search_query"),
+                    "url": v.get("url"),
+                    "summary": v.get("summary")
+                }
+                for v in youtube_videos
+            ] if youtube_videos else []
         }
 
     # 3. 컨텍스트 구성
@@ -342,6 +361,25 @@ async def search(req: SearchRequest):
         prev = link_best_titles.get(link)
         if prev is None or (is_generic_title(prev) and not is_generic_title(title)):
             link_best_titles[link] = title
+
+    # 같은 링크의 다른 청크(제목 줄만 있는 조각)에서 제목 보강
+    chunk_links = list(dict.fromkeys([c.get("link") or "" for c in chunks if c.get("link")]))
+    for i in range(0, len(chunk_links), 40):
+        batch = chunk_links[i:i + 40]
+        db_res = await asyncio.to_thread(
+            lambda links=batch: supabase.table("travel_chunks")
+            .select("link,title,text")
+            .in_("link", links)
+            .execute()
+        )
+        for row in db_res.data or []:
+            link = row.get("link") or ""
+            if not link:
+                continue
+            title = resolve_chunk_title(row)
+            prev = link_best_titles.get(link)
+            if prev is None or (is_generic_title(prev) and not is_generic_title(title)):
+                link_best_titles[link] = title
 
     chunk_titles_by_link = {
         c["link"]: link_best_titles.get(c["link"], chunk_titles_by_id[i + 1])
@@ -530,14 +568,25 @@ async def search(req: SearchRequest):
             elif isinstance(ref_id, int) and ref_id in chunk_titles_by_id:
                 resolved = chunk_titles_by_id[ref_id]
 
-            # LLM generic 제목 → 서버 추출 제목으로 교체 (서버도 generic이면 기존 유지)
-            if resolved and not is_generic_title(resolved):
-                source["title"] = resolved
-            elif resolved and is_generic_title(source.get("title")):
-                source["title"] = resolved
+            # LLM 제목 → 서버 추출 제목으로 교체 (non-generic 우선)
+            if resolved:
+                if not is_generic_title(resolved):
+                    source["title"] = resolved
+                elif is_generic_title(source.get("title")):
+                    source["title"] = resolved
 
             if link and "blog.naver.com" in link and "m.blog.naver.com" not in link:
                 source["link"] = link.replace("https://blog.naver.com", "https://m.blog.naver.com")
+
+    # 유튜브 링크 추가
+    result["youtube_videos"] = [
+        {
+            "title": v.get("search_query"),
+            "url": v.get("url"),
+            "summary": v.get("summary")
+        }
+        for v in youtube_videos
+    ] if youtube_videos else []
 
     return result
 
