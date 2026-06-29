@@ -136,6 +136,15 @@ JSON 외 다른 텍스트는 절대 출력금지.
   👉 한 줄 결론: 혼여면 역세권 비즈니스 호텔이 정답
 - 카테고리는 후기 데이터에 있는 내용 기준으로만. 없는 카테고리 만들지 말 것.
 
+[일정형 쿼리 처리]
+- ~일정, ~코스, ~동선, ~박 N일 키워드면 일정형으로 판단.
+- 섹션을 Day별로 구성. title: "1️⃣ Day1 — 장소명 중심 제목"
+- 각 Day 섹션의 content:
+  오전/오후/저녁 순서로 장소 나열.
+  각 장소는 이모지+**장소명** → 이동수단/소요시간 포함.
+- places_detail에 각 Day의 장소 반드시 포함.
+- 마지막 섹션은 💡 여행 팁으로 끝낼 것.
+
 [places_detail 생성 기준]
 - 추천형 섹션(숙소/맛집/관광지 등)은 반드시 places_detail 배열 사용. 섹션 레벨 reviews 필드 사용 금지.
 - 전체 sections의 places_detail name 합(중복 제외) 최대 5개. content의 **장소명** 개수와 동일해야 함.
@@ -514,21 +523,46 @@ async def search(req: SearchRequest):
         if m:
             return m.group(1).strip() or None
 
+        m = re.search(r"\[제목\s*[:：]\s*(.+?)\]", text[:800])
+        if m:
+            return m.group(1).strip() or None
+
         return None
+
+    def title_from_text_fallback(text: str, max_len: int = 56) -> str:
+        """제목: 줄이 없을 때 본문 첫 유의미 줄을 제목 후보로."""
+        if not text:
+            return ""
+        text = text.strip().replace("\r\n", "\n")
+        skip = re.compile(
+            r"^(제목|작성자|날짜|출처|링크|url|http|www\.|ref:|\[ref:)",
+            re.I,
+        )
+        for line in text.split("\n")[:15]:
+            line = line.strip()
+            line = re.sub(r"^[#*\-\d.)\s]+", "", line).strip()
+            if len(line) < 8 or len(line) > 100:
+                continue
+            if skip.match(line):
+                continue
+            return line[:max_len].strip()
+        return ""
 
     def resolve_chunk_title(chunk: dict) -> str:
         db_title = (chunk.get("title") or "").strip()
-        extracted = extract_title(chunk.get("text", ""))
+        text = chunk.get("text", "") or ""
+        extracted = extract_title(text)
+        fallback = title_from_text_fallback(text)
 
-        if extracted and not is_generic_title(extracted):
-            return extracted
-        if db_title and not is_generic_title(db_title):
-            return db_title
-        if extracted:
-            return extracted
-        if db_title:
-            return db_title
-        return "네이버 카페 후기"
+        for candidate in (extracted, db_title, fallback):
+            if candidate and not is_generic_title(candidate):
+                return candidate.strip()
+
+        for candidate in (extracted, db_title, fallback):
+            if candidate and candidate.strip():
+                return candidate.strip()
+
+        return ""
 
     chunk_titles_by_id = {i + 1: resolve_chunk_title(c) for i, c in enumerate(chunks)}
 
@@ -757,6 +791,18 @@ async def search(req: SearchRequest):
                     source["title"] = resolved
                 elif is_generic_title(source.get("title")):
                     source["title"] = resolved
+
+            if is_generic_title(source.get("title")):
+                link = source.get("link") or ""
+                if link and link in link_best_titles:
+                    alt = link_best_titles[link]
+                    if alt and not is_generic_title(alt):
+                        source["title"] = alt
+
+            if is_generic_title(source.get("title")) and isinstance(ref_id, int) and 1 <= ref_id <= len(chunks):
+                fb = title_from_text_fallback(chunks[ref_id - 1].get("text", ""))
+                if fb and not is_generic_title(fb):
+                    source["title"] = fb
 
             if link and "blog.naver.com" in link and "m.blog.naver.com" not in link:
                 source["link"] = link.replace("https://blog.naver.com", "https://m.blog.naver.com")
