@@ -242,30 +242,37 @@ async def search(req: SearchRequest):
     )
     query_vector = result.embeddings[0].values
 
-    # 2. 벡터 검색
-    res, youtube_res = await asyncio.gather(
-        asyncio.to_thread(
-            lambda: supabase.rpc("match_travel_chunks", {
-                "query_embedding": query_vector,
-                "match_threshold": req.match_threshold,
-                "match_count": req.match_count,
-                "filter_city": req.city,
-                "filter_category": req.category,
-                "filter_travel_style": req.travel_style
-            }).execute()
-        ),
-        asyncio.to_thread(
+    # 2. 벡터 검색 (유튜브는 RPC 없거나 실패 시 빈 배열 — 후기 검색은 계속)
+    res = await asyncio.to_thread(
+        lambda: supabase.rpc("match_travel_chunks", {
+            "query_embedding": query_vector,
+            "match_threshold": req.match_threshold,
+            "match_count": req.match_count,
+            "filter_city": req.city,
+            "filter_category": req.category,
+            "filter_travel_style": req.travel_style
+        }).execute()
+    )
+
+    chunks = res.data
+
+    youtube_videos = []
+    try:
+        youtube_res = await asyncio.to_thread(
             lambda: supabase.rpc("match_youtube_videos", {
                 "query_embedding": query_vector,
                 "match_threshold": 0.6,
                 "match_count": 3,
                 "filter_city": req.city
             }).execute()
-        ),
-    )
-
-    chunks = res.data
-    youtube_videos = youtube_res.data or []
+        )
+        youtube_videos = youtube_res.data or []
+    except Exception as e:
+        print(
+            f"match_youtube_videos 실패 (후기 검색은 계속): {e}",
+            flush=True,
+            file=sys.stderr,
+        )
 
     if not chunks:
         return {
@@ -368,7 +375,7 @@ async def search(req: SearchRequest):
         batch = chunk_links[i:i + 40]
         db_res = await asyncio.to_thread(
             lambda links=batch: supabase.table("travel_chunks")
-            .select("link,title,text")
+            .select("link,text")
             .in_("link", links)
             .execute()
         )
