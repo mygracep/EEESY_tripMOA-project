@@ -121,8 +121,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - icon 필드에는 이모지만 넣으세요. 텍스트 포함 금지
 - 모든 쿼리에서 icon을 빈값("")으로 두고, title 앞에 1️⃣ 2️⃣ 3️⃣ 4️⃣ 순서로 붙일 것.
 - 단, 여행 팁은 넘버링 금지. [일정형 쿼리 처리] 규칙 따를 것.
-- 마지막 💡 상황별추천/여행팁 섹션은 icon 💡, 넘버링 없음.
-  마지막 상황별 추천 섹션만 icon을 💡로.
+- 마지막 여행 팁 섹션은 icon 💡, 넘버링 없음.
 - 일정형(~일정/코스/동선/N박N일)은 이 규칙을 적용하지 말고 [일정형 쿼리 처리]만 따를 것.
 
 [섹션 구성 원칙 — 추천형 전용, 일정형에는 적용 금지]
@@ -132,9 +131,9 @@ JSON 외 다른 텍스트는 절대 출력금지.
   icon: "", title: "1️⃣ 위치+편의성 최강 (혼자 여행 기본 선택)"
   icon: "", title: "2️⃣ 가성비+혼자 최적 (잠만 자면 이거)"
   icon: "", title: "3️⃣ 힐링형 (피로 풀고 싶으면)"
-  icon: "💡", title: "💡 상황별추천"
+  icon: "💡", title: "상황별추천"
 - 섹션당 장소 1~2개씩 배분 가능. 단, 답변 전체 고유 **장소명** 합은 최대 5개.
-- 마지막 섹션은 반드시 title "💡 상황별추천" 으로 끝낼 것 (icon: "" 또는 💡).
+- 마지막 섹션은 반드시 title "상황별추천" 으로 끝낼 것 (icon: "💡").
   content 예)
   ✔ 첫 혼여/편하게 → **호텔명**
   ✔ 가성비+잠만 → **호텔명**
@@ -156,11 +155,11 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - **전체 sections의 places_detail name 합(숙소 섹션 포함) 최대 5개 엄수.**
   Day가 3개면 Day당 1~2개만. 숙소 2개 + Day 장소 3개 = 5개가 한계.
   6개 이상 places_detail 생성 금지 — JSON 출력이 깨질 수 있음.
-- places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (여행 팁·숙소 섹션은 places_detail 필수).
+- places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (숙소 섹션은 places_detail 필수).
   reviews 최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
-- 마지막 섹션은 💡 상황별추천이 아니라 💡 여행 팁으로 끝낼 것.
-- 마지막 섹션: title "💡 여행 팁" (icon "" 또는 "💡"), places_detail: []
-- 여행 팁 content 형식은 💡 상황별추천과 동일:
+- 마지막 섹션은 상황별추천이 아니라 여행 팁으로 끝낼 것.
+- 마지막 섹션: title "여행 팁" (이모지 없이), icon "💡", places_detail: []
+- 여행 팁 content 형식은 상황별추천과 동일:
   - 짧은 본문 줄 나열 (✔ 교통 / ✔ 렌터카 / ✔ 주의사항 등)
   - 각 줄 끝 [ref:N] 필수 (후기 근거)
   - **장소명 블록·이모지+장소·사진 형식 사용 금지**
@@ -190,7 +189,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - 부정 후기 1개 이상 포함 (질문형·의견형 negative 금지, 실제 아쉬운 **경험**만)
 - sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
 - warnings: **negative reviews에서 주의사항을 15자 이내로 요약**하여 반드시 추출. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
-- 팁·결론만 있는 섹션(장소 없음)은 places_detail: []
+- 팁·결론만 있는 섹션(여행 팁)은 places_detail: []
 
 
 [reviews 생성 기준]
@@ -685,10 +684,10 @@ ITINERARY_MODE_BLOCK = """
 출력 전 자가검증:
 □ Day 섹션 title "DAY1 — 소제목", icon "" (이모지 없음)
 □ Day content: 실제 **장소명**만. 카테고리 줄·동일 장소명 중복 금지. 이동 줄에 약 N분/N시간 필수
-□ Day에 🏨 숙소 없음 → icon 🏨 + title "숙소 추천" 섹션 별도
+□ Day에 🏨 숙소 없음 → icon 🏨 + title "숙소 추천" 섹션 별도 (places_detail 필수)
 □ 전체 places_detail name 합(숙소 포함) **5개 이하** — Day당 1~2개만
 □ 각 Day: content **장소명**마다 places_detail + reviews(최대 3) + warnings
-□ 마지막만 "💡 여행 팁", places_detail: []
+□ 마지막만 title "여행 팁", icon "💡", places_detail: []
 """
 
 DAY_SECTION_TITLE_RE = re.compile(r"^(?:day\s*)?(\d+)\s*일차", re.IGNORECASE)
@@ -1336,7 +1335,93 @@ async def search(req: SearchRequest):
     if result.get("summary"):
         result["summary"] = INLINE_REF_RE.sub(" ", str(result["summary"])).strip()
 
+    renumber_source_refs(result)
+
     return result
+
+
+REF_TAG_RE = re.compile(r"\[ref:(\d+)\]")
+
+
+def _remap_ref_text(text: str, old_to_new: dict[int, int]) -> str:
+    if not text:
+        return text
+
+    def repl(m: re.Match) -> str:
+        old = int(m.group(1))
+        new = old_to_new.get(old)
+        return f"[ref:{new}]" if new is not None else ""
+
+    return REF_TAG_RE.sub(repl, text)
+
+
+def renumber_source_refs(result: dict) -> None:
+    sources = result.get("sources") or []
+    if not sources:
+        return
+
+    sorted_sources = sorted(sources, key=lambda s: int(s.get("id", 0)))
+    old_to_new: dict[int, int] = {}
+    for i, source in enumerate(sorted_sources):
+        try:
+            old_id = int(source.get("id"))
+        except (TypeError, ValueError):
+            continue
+        new_id = i + 1
+        old_to_new[old_id] = new_id
+        source["id"] = new_id
+
+    result["sources"] = sorted_sources
+
+    result["summary"] = _remap_ref_text(result.get("summary") or "", old_to_new)
+
+    for section in result.get("sections", []):
+        section["content"] = _remap_ref_text(section.get("content") or "", old_to_new)
+        table = section.get("table")
+        if table and isinstance(table.get("rows"), list):
+            for row in table["rows"]:
+                if isinstance(row, list):
+                    for j, cell in enumerate(row):
+                        row[j] = _remap_ref_text(str(cell or ""), old_to_new)
+        for pd in section.get("places_detail", []):
+            pd["description"] = _remap_ref_text(pd.get("description") or "", old_to_new)
+            pd["warnings"] = [
+                w
+                for w in (
+                    _remap_ref_text(w, old_to_new)
+                    for w in (pd.get("warnings") or [])
+                    if w
+                )
+                if w
+            ]
+            for review in pd.get("reviews", []):
+                if not isinstance(review, dict):
+                    continue
+                review["text"] = _remap_ref_text(review.get("text") or "", old_to_new)
+                ref = review.get("ref")
+                if ref is not None:
+                    try:
+                        mapped = old_to_new.get(int(ref))
+                    except (TypeError, ValueError):
+                        mapped = None
+                    if mapped is not None:
+                        review["ref"] = mapped
+                    else:
+                        review.pop("ref", None)
+        for review in section.get("reviews", []):
+            if not isinstance(review, dict):
+                continue
+            review["text"] = _remap_ref_text(review.get("text") or "", old_to_new)
+            ref = review.get("ref")
+            if ref is not None:
+                try:
+                    mapped = old_to_new.get(int(ref))
+                except (TypeError, ValueError):
+                    mapped = None
+                if mapped is not None:
+                    review["ref"] = mapped
+                else:
+                    review.pop("ref", None)
 
 
 @app.get("/health")
