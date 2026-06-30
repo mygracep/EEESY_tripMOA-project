@@ -415,6 +415,7 @@ def pick_place_reviews(
     strict: list = []
     relaxed_pool: list = []
     raw_pool: list = []
+    seen_refs: set[int] = set()
     has_place_context = bool((place_name or "").strip())
 
     def is_relevant(r: dict) -> bool:
@@ -431,8 +432,11 @@ def pick_place_reviews(
         ref_id = _review_ref_id(r)
         if ref_id is None:
             continue
+        if ref_id in seen_refs:
+            continue
         r["ref"] = ref_id
         raw_pool.append(r)
+        seen_refs.add(ref_id)
         if is_valid_review_text(text):
             strict.append(r)
         elif is_relaxed_review_text(text):
