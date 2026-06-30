@@ -1052,7 +1052,7 @@ class SearchRequest(BaseModel):
     category: str = None
     travel_style: str = None
     match_threshold: float = 0.65
-    match_count: int = 20
+    match_count: int = 25
 
 
 async def get_place_details(place_name: str, city: str = None) -> dict:
