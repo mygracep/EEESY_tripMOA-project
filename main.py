@@ -188,6 +188,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - **reviews 제외:** 질문·문의(?/궁금/할까요), 일정·동선 나열(/, ->), 의견·제안만(~포기하면, ~넣고 싶)
 - **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 일정·동선 조언, 추천/비추, 아쉬운 **경험**
 - 장소당 실후기 **2~3개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상). **1개만 넣거나 reviews 빈 배열 금지.**
+- **reviews.ref 필수** — 각 review마다 ref(숫자)와 text 본문 [ref:N] 중 하나 이상 반드시 포함. ref 없는 review 금지.
 - reviews.text: 참고 후기 **원문 전체**를 줄임·요약 없이 복사. 첫 문장만 잘라내지 말 것. 2~4문장·줄바꿈 포함 가능.
 - 후기 원문 그대로 인용, 요약·한 줄 압축 금지.
 - 부정 후기 1개 이상 포함 (질문형·의견형 negative 금지, 실제 아쉬운 **경험**만)
@@ -197,6 +198,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 
 
 [reviews 생성 기준]
+- reviews.text 끝에 반드시 [ref:N] 포함. ref 없는 review 생성 금지.
 - 실제 경험 서술 문장만 인용. (~했어요, ~였어요, ~좋았어요, ~별로였어요)
 - 아래는 reviews에 넣지 말 것:
   ✗ 질문형 (~까요?, ~나요?, ~죠?, ~할까요?)
@@ -422,6 +424,10 @@ def pick_place_reviews(
         text = (r.get("text") or "").strip()
         if not text or not is_relevant(r):
             continue
+        ref_id = _review_ref_id(r)
+        if ref_id is None:
+            continue
+        r["ref"] = ref_id
         raw_pool.append(r)
         if is_valid_review_text(text):
             strict.append(r)
@@ -647,11 +653,21 @@ async def extend_result_reviews(result: dict, chunks: list) -> None:
 
 
 def postprocess_place_detail(pd: dict) -> None:
-    pd["reviews"] = pick_place_reviews(
+    reviews = pick_place_reviews(
         pd.get("reviews", []),
         place_name=pd.get("name") or "",
         description=pd.get("description") or "",
     )
+    validated: list = []
+    for r in reviews:
+        if not isinstance(r, dict):
+            continue
+        ref_id = _review_ref_id(r)
+        if ref_id is None:
+            continue
+        r["ref"] = ref_id
+        validated.append(r)
+    pd["reviews"] = validated
     raw_warnings = pd.get("warnings") or []
     pd["warnings"] = [
         w
@@ -1413,30 +1429,28 @@ def renumber_source_refs(result: dict) -> None:
                 if not isinstance(review, dict):
                     continue
                 review["text"] = _remap_ref_text(review.get("text") or "", old_to_new)
-                ref = review.get("ref")
-                if ref is not None:
-                    try:
-                        mapped = old_to_new.get(int(ref))
-                    except (TypeError, ValueError):
-                        mapped = None
+                ref_id = _review_ref_id(review)
+                if ref_id is not None:
+                    mapped = old_to_new.get(ref_id)
                     if mapped is not None:
                         review["ref"] = mapped
                     else:
                         review.pop("ref", None)
+                else:
+                    review.pop("ref", None)
         for review in section.get("reviews", []):
             if not isinstance(review, dict):
                 continue
             review["text"] = _remap_ref_text(review.get("text") or "", old_to_new)
-            ref = review.get("ref")
-            if ref is not None:
-                try:
-                    mapped = old_to_new.get(int(ref))
-                except (TypeError, ValueError):
-                    mapped = None
+            ref_id = _review_ref_id(review)
+            if ref_id is not None:
+                mapped = old_to_new.get(ref_id)
                 if mapped is not None:
                     review["ref"] = mapped
                 else:
                     review.pop("ref", None)
+            else:
+                review.pop("ref", None)
 
 
 @app.get("/health")
