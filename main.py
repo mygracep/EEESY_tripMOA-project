@@ -904,7 +904,7 @@ def _section_place_names(section: dict) -> list[str]:
     return names
 
 
-def normalize_itinerary_response(result: dict) -> None:
+def normalize_itinerary_response(result: dict, chunks: list | None = None) -> None:
     for section in result.get("sections", []):
         title = (section.get("title") or "").strip()
         if re.search(r"여행\s*팁", title, re.IGNORECASE):
@@ -931,7 +931,7 @@ def normalize_itinerary_response(result: dict) -> None:
             section["content"] = "\n".join(line for line in cleaned if line.strip())
 
         for pd in section.get("places_detail", []):
-            postprocess_place_detail(pd)
+            postprocess_place_detail(pd, chunks)
 
 
 def collect_place_names_for_api(
@@ -1305,7 +1305,7 @@ async def search(req: SearchRequest):
             section["content"] = split_inline_place_blocks(content)
 
     if itinerary_query:
-        normalize_itinerary_response(result)
+        normalize_itinerary_response(result, chunks)
         await extend_result_reviews(result, chunks)
     enrich_place_warnings(result, chunks)
 
