@@ -469,6 +469,44 @@ def pick_place_reviews(
     return out[:max_count]
 
 
+def backfill_reviews_from_chunks(
+    pd: dict, chunks: list, min_count: int = 2, max_count: int = 3
+) -> None:
+    """places_detail.reviews가 min_count 미달이면 원본 chunks에서 관련 텍스트를 추가로 찾아 보강."""
+    reviews = pd.get("reviews", [])
+    if len(reviews) >= min_count:
+        return
+
+    place_name = pd.get("name") or ""
+    description = pd.get("description") or ""
+    existing_texts = {(r.get("text") or "").strip() for r in reviews}
+    existing_refs = {r.get("ref") for r in reviews if r.get("ref") is not None}
+
+    for i, chunk in enumerate(chunks):
+        if len(reviews) >= max_count:
+            break
+        ref_id = i + 1
+        if ref_id in existing_refs:
+            continue
+        text = (chunk.get("text") or "").strip()
+        if not text or text in existing_texts:
+            continue
+        if not is_review_relevant_to_place(text, place_name, description):
+            continue
+        if not is_relaxed_review_text(text):
+            continue
+        reviews.append({
+            "text": text,
+            "sentiment": "positive",
+            "date": chunk.get("date", ""),
+            "ref": ref_id,
+        })
+        existing_texts.add(text)
+        existing_refs.add(ref_id)
+
+    pd["reviews"] = reviews
+
+
 def filter_valid_reviews(reviews: list) -> list:
     return pick_place_reviews(reviews)
 
@@ -656,7 +694,7 @@ async def extend_result_reviews(result: dict, chunks: list) -> None:
                     review["text"] = extended
 
 
-def postprocess_place_detail(pd: dict) -> None:
+def postprocess_place_detail(pd: dict, chunks: list | None = None) -> None:
     reviews = pick_place_reviews(
         pd.get("reviews", []),
         place_name=pd.get("name") or "",
@@ -672,6 +710,8 @@ def postprocess_place_detail(pd: dict) -> None:
         r["ref"] = ref_id
         validated.append(r)
     pd["reviews"] = validated
+    if chunks and len(pd["reviews"]) < 2:
+        backfill_reviews_from_chunks(pd, chunks, min_count=2, max_count=3)
     raw_warnings = pd.get("warnings") or []
     pd["warnings"] = [
         w
@@ -688,10 +728,10 @@ def postprocess_place_detail(pd: dict) -> None:
             pd["warnings"] = inferred
 
 
-def enrich_place_warnings(result: dict) -> None:
+def enrich_place_warnings(result: dict, chunks: list | None = None) -> None:
     for section in result.get("sections", []):
         for pd in section.get("places_detail", []):
-            postprocess_place_detail(pd)
+            postprocess_place_detail(pd, chunks)
 
 
 ITINERARY_QUERY_RE = re.compile(
@@ -728,6 +768,16 @@ INLINE_REF_RE = re.compile(r"\s*(?:\[ref:\d+\])+\s*")
 PLACE_EMOJI_PREFIX = re.compile(
     r"^[\s]*(?:[\U0001F300-\U0001FAFF\U00002600-\U000027BF]|🗺️|🏨|🍜|⛩️|🚆|🛍️|💰|📍)"
 )
+PLACE_INLINE_SPLIT_RE = re.compile(
+    r"([^\n])(\s*)(🍜|🏨|⛩️|🛍️|🚆|💰)(\s*\*\*)"
+)
+
+
+def split_inline_place_blocks(content: str) -> str:
+    """한 줄에 여러 장소(이모지+**장소명**)가 붙어있으면 강제로 분리."""
+    if not content:
+        return content
+    return PLACE_INLINE_SPLIT_RE.sub(r"\1\n\n\3\4", content)
 
 
 def is_itinerary_query(query: str) -> bool:
@@ -1218,10 +1268,15 @@ async def search(req: SearchRequest):
     print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True, file=sys.stderr)
 
+    for section in result.get("sections", []):
+        content = section.get("content")
+        if content:
+            section["content"] = split_inline_place_blocks(content)
+
     if itinerary_query:
         normalize_itinerary_response(result)
         await extend_result_reviews(result, chunks)
-    enrich_place_warnings(result)
+    enrich_place_warnings(result, chunks)
 
     # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
     place_names = collect_place_names_for_api(result, limit=5, itinerary=itinerary_query)
