@@ -193,6 +193,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 일정·동선 조언, 추천/비추, 아쉬운 **경험**
 - 장소당 실후기 **2~3개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상). **1개만 넣거나 reviews 빈 배열 금지.**
 - **reviews.ref 필수** — 각 review마다 ref(숫자)와 text 본문 [ref:N] 중 하나 이상 반드시 포함. ref 없는 review 금지.
+- 한 장소의 reviews 안에서도 같은 [ref:N]을 2개 이상 review에 쓰지 말 것. review마다 반드시 다른 ref 사용.
 - reviews.text: 후기 작성자의 **경험·감상 문장**만 원문 그대로 인용. 2~4문장·줄바꿈 포함 가능. 요약·한 줄 압축·청크 전체 복사 금지.
 - 부정 후기 1개 이상 포함 (질문형·의견형 negative 금지, 실제 아쉬운 **경험**만)
 - sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
@@ -327,6 +328,7 @@ NUMBERED_FIELD_RE = re.compile(
 SKIP_MATCH_TOKENS = {
     "본점", "지점", "점", "마쓰야마", "오사카", "교토", "도쿄", "후쿠오카", "나고야",
     "삿포로", "오키나와", "일본", "여행", "식당", "카페", "레스토랑", "호텔", "숙소",
+    "도고", "온센", "온천",
 }
 
 DESSERT_MARKERS_RE = re.compile(
@@ -419,9 +421,9 @@ def clean_review_text(text: str, max_len: int = 200) -> str:
         return ""
 
     if t.startswith("제목"):
-        if len(t) > max_len:
-            return ""
-    elif len(t) > max_len:
+        return ""
+
+    if len(t) > max_len:
         return ""
 
     return t
@@ -1273,7 +1275,10 @@ async def search(req: SearchRequest):
     response = await gemini_client.aio.models.generate_content(
         model="gemini-2.5-flash",
         contents=f"{system_prompt}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
-        config={"thinking_config": {"thinking_budget": 0}}
+        config={
+            "thinking_config": {"thinking_budget": 0},
+            "response_mime_type": "application/json",
+        }
     )
 
     # 5. JSON 파싱
