@@ -1138,15 +1138,26 @@ async def search(req: SearchRequest):
         }
 
     # 3. 컨텍스트 구성
-    print(f"\n=== 검색된 청크 {len(chunks)}개 ===")
-    for i, c in enumerate(chunks):
-        print(f"[{i+1}] similarity={c.get('similarity', '?'):.3f} | {c.get('title','')[:30]} | {c['text'][:60]}")
+    print(f"\n=== 검색된 청크 {len(chunks)}개 ===", flush=True, file=sys.stderr)
 
     def resolve_chunk_title(chunk: dict) -> str:
         return (chunk.get("title") or "").strip() or "네이버 블로그 후기"
 
+    def format_chunk_log(i: int, chunk: dict) -> str:
+        sim = chunk.get("similarity")
+        try:
+            sim_str = f"{float(sim):.3f}" if sim is not None else "?"
+        except (TypeError, ValueError):
+            sim_str = "?"
+        title_preview = (chunk.get("title") or "")[:30]
+        text_preview = (chunk.get("text") or "")[:60]
+        return f"[{i + 1}] similarity={sim_str} | {title_preview} | {text_preview}"
+
+    for i, c in enumerate(chunks):
+        print(format_chunk_log(i, c), flush=True, file=sys.stderr)
+
     context = "\n\n".join([
-        f"[id:{i + 1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {resolve_chunk_title(c)}]\n{c['text']}"
+        f"[id:{i + 1}] [출처: {c.get('link', '')}] [날짜: {c.get('date', '')}] [제목: {resolve_chunk_title(c)}]\n{c.get('text') or ''}"
         for i, c in enumerate(chunks)
     ])
 
