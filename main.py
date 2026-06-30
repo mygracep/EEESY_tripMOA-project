@@ -193,8 +193,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 일정·동선 조언, 추천/비추, 아쉬운 **경험**
 - 장소당 실후기 **2~3개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상). **1개만 넣거나 reviews 빈 배열 금지.**
 - **reviews.ref 필수** — 각 review마다 ref(숫자)와 text 본문 [ref:N] 중 하나 이상 반드시 포함. ref 없는 review 금지.
-- reviews.text: 참고 후기 **원문 전체**를 줄임·요약 없이 복사. 첫 문장만 잘라내지 말 것. 2~4문장·줄바꿈 포함 가능.
-- 후기 원문 그대로 인용, 요약·한 줄 압축 금지.
+- reviews.text: 후기 작성자의 **경험·감상 문장**만 원문 그대로 인용. 2~4문장·줄바꿈 포함 가능. 요약·한 줄 압축·청크 전체 복사 금지.
 - 부정 후기 1개 이상 포함 (질문형·의견형 negative 금지, 실제 아쉬운 **경험**만)
 - sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
 - warnings: **negative reviews에서 주의사항을 15자 이내로 요약**하여 반드시 추출. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
@@ -203,6 +202,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 
 [reviews 생성 기준]
 - reviews.text 끝에 반드시 [ref:N] 포함. ref 없는 review 생성 금지.
+- reviews.text는 후기 작성자가 실제로 쓴 감상/경험 문장만. "제목:", "1. 내가주는 추천점수", "상점명:", "지역:" 같은 글 메타데이터·목록 형식·청크 전체 복사 절대 금지.
 - 실제 경험 서술 문장만 인용. (~했어요, ~였어요, ~좋았어요, ~별로였어요)
 - 아래는 reviews에 넣지 말 것:
   ✗ 질문형 (~까요?, ~나요?, ~죠?, ~할까요?)
@@ -319,6 +319,10 @@ ITINERARY_DUMP_RE = re.compile(
     r"(?:/|->|→).*(?:/|->|→)|주차장-|복귀.*취침|저녁식사후|하부\s*무료",
     re.I,
 )
+TITLE_PREFIX_RE = re.compile(r"^제목\s*[:：]\s*.+?(?=\n\n|\Z)", re.DOTALL)
+NUMBERED_FIELD_RE = re.compile(
+    r"\d\.\s*(?:내가주는\s*추천점수|상점명|지역|상점위치|분위기)\s*[:：]"
+)
 
 SKIP_MATCH_TOKENS = {
     "본점", "지점", "점", "마쓰야마", "오사카", "교토", "도쿄", "후쿠오카", "나고야",
@@ -403,6 +407,24 @@ def is_valid_review_text(text: str) -> bool:
     if OPINION_RE.search(t):
         return False
     return True
+
+
+def clean_review_text(text: str, max_len: int = 200) -> str:
+    """청크 전체가 review로 들어온 경우 정리."""
+    t = (text or "").strip()
+    if not t:
+        return t
+
+    if NUMBERED_FIELD_RE.search(t):
+        return ""
+
+    if t.startswith("제목"):
+        if len(t) > max_len:
+            return ""
+    elif len(t) > max_len:
+        return ""
+
+    return t
 
 
 def pick_place_reviews(
@@ -493,6 +515,7 @@ def backfill_reviews_from_chunks(
         if ref_id in existing_refs:
             continue
         text = (chunk.get("text") or "").strip()
+        text = clean_review_text(text)
         if not text or text in existing_texts:
             continue
         if not is_review_relevant_to_place(text, place_name, description):
@@ -699,8 +722,12 @@ async def extend_result_reviews(result: dict, chunks: list) -> None:
 
 
 def postprocess_place_detail(pd: dict, chunks: list | None = None) -> None:
+    raw_reviews = pd.get("reviews", []) or []
+    for r in raw_reviews:
+        if isinstance(r, dict):
+            r["text"] = clean_review_text(r.get("text", ""))
     reviews = pick_place_reviews(
-        pd.get("reviews", []),
+        [r for r in raw_reviews if isinstance(r, dict) and (r.get("text") or "").strip()],
         place_name=pd.get("name") or "",
         description=pd.get("description") or "",
     )
