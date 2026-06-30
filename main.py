@@ -1051,196 +1051,11 @@ async def search(req: SearchRequest):
     for i, c in enumerate(chunks):
         print(f"[{i+1}] similarity={c.get('similarity', '?'):.3f} | {c.get('title','')[:30]} | {c['text'][:60]}")
 
-    GENERIC_TITLES = {
-        "",
-        "네이버 카페 후기",
-        "네이버 카페",
-        "네이버 블로그 후기",
-        "네이버후기",
-        "네이버 후기",
-    }
-
-    def normalize_source_title(title: str | None) -> str:
-        """카페 질문/댓글 라벨 정리 — 질문: 접두·? 이후 제거."""
-        if not title:
-            return ""
-        t = re.sub(r"^[#*\-\d.)\s]+", "", title.strip()).strip()
-        m = re.match(r"^질문\s*[:：]\s*(.+)$", t, re.I | re.S)
-        if m:
-            t = m.group(1).strip()
-        q = re.search(r"[?？]", t)
-        if q:
-            t = t[: q.start()].strip()
-        return t.strip()
-
-    def is_generic_title(title: str | None) -> bool:
-        t = normalize_source_title(title)
-        if not t or t in GENERIC_TITLES:
-            return True
-        if re.match(r"^댓글\s*[:：]", t, re.I):
-            return True
-        if "네이버" in t and "후기" in t and len(t) <= 24:
-            return True
-        if t.endswith("?") or t.endswith("？"):
-            return True
-        return False
-
-    def extract_title(text: str) -> str | None:
-        """text에서 '제목: ...' 추출 (청크 분할돼도 본문 어디든 검색)."""
-        if not text:
-            return None
-        text = text.strip().lstrip("\ufeff").replace("\r\n", "\n")
-        lines = text.split("\n")
-
-        for i, raw_line in enumerate(lines[:20]):
-            line = raw_line.strip()
-            m = re.match(r"^제목\s*[:：]\s*(.*)$", line, re.IGNORECASE)
-            if m:
-                val = normalize_source_title(m.group(1).strip())
-                if val:
-                    return val
-                for j in range(i + 1, min(i + 4, len(lines))):
-                    next_line = lines[j].strip()
-                    if not next_line:
-                        continue
-                    if re.match(r"^(본문|내용|작성자|날짜|출처|링크|댓글)", next_line, re.I):
-                        continue
-                    val = normalize_source_title(next_line)
-                    if val:
-                        return val
-                return None
-
-        m = re.search(
-            r"(?:^|\n)제목\s*[:：]\s*(.+?)(?:\n|$)",
-            text[:4000],
-            re.IGNORECASE,
-        )
-        if m:
-            val = normalize_source_title(m.group(1).strip())
-            if val:
-                return val
-
-        m = re.search(r"\[제목:\s*(.+?)\]", text[:800])
-        if m:
-            val = normalize_source_title(m.group(1).strip())
-            if val:
-                return val
-
-        m = re.search(r"\[제목\s*[:：]\s*(.+?)\]", text[:800])
-        if m:
-            val = normalize_source_title(m.group(1).strip())
-            if val:
-                return val
-
-        return None
-
-    def title_from_text_fallback(text: str, max_len: int = 56) -> str:
-        """제목: 줄이 없을 때 본문 첫 유의미 줄을 제목 후보로."""
-        if not text:
-            return ""
-        text = text.strip().replace("\r\n", "\n")
-        skip = re.compile(
-            r"^(제목|작성자|날짜|출처|링크|url|http|www\.|ref:|\[ref:|댓글)",
-            re.I,
-        )
-        for line in text.split("\n")[:15]:
-            line = line.strip()
-            bare = re.sub(r"^[#*\-\d.)\s]+", "", line).strip()
-            qm = re.match(r"^질문\s*[:：]\s*(.+)$", bare, re.I | re.S)
-            if qm:
-                normalized = normalize_source_title(qm.group(1))
-                if len(normalized) >= 8:
-                    return normalized[:max_len].strip()
-            if len(bare) < 8 or len(bare) > 100:
-                continue
-            if skip.match(bare):
-                continue
-            return normalize_source_title(bare)[:max_len].strip()
-        return ""
-
-    def score_chunk_title(row: dict) -> tuple[int, str]:
-        text = row.get("text", "") or ""
-        raw_extracted = extract_title(text)
-        extracted = normalize_source_title(raw_extracted)
-        if extracted and not is_generic_title(extracted):
-            return 3, extracted
-
-        db_title = normalize_source_title((row.get("title") or "").strip())
-        if db_title and not is_generic_title(db_title):
-            return 2, db_title
-
-        fallback = normalize_source_title(title_from_text_fallback(text))
-        if fallback and not is_generic_title(fallback):
-            return 1, fallback
-
-        return 0, extracted or db_title or fallback or ""
-
     def resolve_chunk_title(chunk: dict) -> str:
-        return score_chunk_title(chunk)[1]
-
-    chunk_titles_by_id = {i + 1: resolve_chunk_title(c) for i, c in enumerate(chunks)}
-
-    # 같은 링크 청크 중 제목이 있는 조각을 우선 사용 (벡터 분할 대응)
-    link_best_titles: dict[str, str] = {}
-    link_best_scores: dict[str, int] = {}
-    for c in chunks:
-        link = c.get("link") or ""
-        if not link:
-            continue
-        score, title = score_chunk_title(c)
-        prev_score = link_best_scores.get(link, 0)
-        if score > prev_score or (
-            score == prev_score
-            and title
-            and not is_generic_title(title)
-            and is_generic_title(link_best_titles.get(link))
-        ):
-            link_best_titles[link] = title
-            link_best_scores[link] = score
-
-    # 같은 링크의 다른 청크(제목 줄만 있는 조각)에서 제목 보강
-    chunk_links = list(dict.fromkeys([c.get("link") or "" for c in chunks if c.get("link")]))
-    for i in range(0, len(chunk_links), 40):
-        batch = chunk_links[i:i + 40]
-        db_res = await asyncio.to_thread(
-            lambda links=batch: supabase.table("travel_chunks")
-            .select("link,text,title,chunk_index")
-            .in_("link", links)
-            .order("chunk_index")
-            .execute()
-        )
-        for row in db_res.data or []:
-            link = row.get("link") or ""
-            if not link:
-                continue
-            score, title = score_chunk_title(row)
-            prev_score = link_best_scores.get(link, 0)
-            if score > prev_score or (
-                score == prev_score
-                and title
-                and not is_generic_title(title)
-                and is_generic_title(link_best_titles.get(link))
-            ):
-                link_best_titles[link] = title
-                link_best_scores[link] = score
-
-    chunk_titles_by_link = {
-        c["link"]: link_best_titles.get(c["link"], chunk_titles_by_id[i + 1])
-        for i, c in enumerate(chunks)
-    }
-
-    def best_title_for_chunk(ref_id: int, chunk: dict) -> str:
-        by_id = chunk_titles_by_id.get(ref_id, resolve_chunk_title(chunk))
-        link = chunk.get("link") or ""
-        by_link = link_best_titles.get(link) if link else None
-        if by_link and not is_generic_title(by_link):
-            return by_link
-        if not is_generic_title(by_id):
-            return by_id
-        return by_link or by_id
+        return (chunk.get("title") or "").strip() or "네이버 블로그 후기"
 
     context = "\n\n".join([
-        f"[id:{i + 1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {best_title_for_chunk(i + 1, c)}]\n{c['text']}"
+        f"[id:{i + 1}] [출처: {c['link']}] [날짜: {c.get('date', '')}] [제목: {resolve_chunk_title(c)}]\n{c['text']}"
         for i, c in enumerate(chunks)
     ])
 
@@ -1355,7 +1170,7 @@ async def search(req: SearchRequest):
             "is_ad": chunk.get("is_ad", False),
         }
 
-    # 7. 본문 [ref:N] ↔ sources 동기화 + 제목 보정 + 중복 제거 + 모바일 URL
+    # 7. 본문 [ref:N] ↔ sources 동기화 + 중복 제거 + 모바일 URL
     cited_refs = collect_cited_ref_ids(result)
     sources_by_id: dict[int, dict] = {}
 
@@ -1375,7 +1190,7 @@ async def search(req: SearchRequest):
         sources_by_id[ref_id] = chunk_to_source(
             ref_id,
             chunk,
-            best_title_for_chunk(ref_id, chunk),
+            resolve_chunk_title(chunk),
         )
 
     if sources_by_id:
@@ -1412,45 +1227,7 @@ async def search(req: SearchRequest):
             if chunk_for_ref:
                 source["text_preview"] = (chunk_for_ref.get("text") or "")[:1200]
                 source["is_ad"] = bool(chunk_for_ref.get("is_ad"))
-
-            resolved = None
-            if chunk_for_ref:
-                resolved = best_title_for_chunk(ref_id, chunk_for_ref)
-            elif link and link in link_best_titles:
-                resolved = link_best_titles[link]
-            elif isinstance(ref_id, int) and ref_id in chunk_titles_by_id:
-                resolved = chunk_titles_by_id[ref_id]
-
-            # LLM 제목 → 서버 추출 제목으로 교체 (non-generic 우선)
-            if resolved:
-                if not is_generic_title(resolved):
-                    source["title"] = resolved
-                elif is_generic_title(source.get("title")):
-                    source["title"] = resolved
-
-            if is_generic_title(source.get("title")):
-                link = source.get("link") or ""
-                if link and link in link_best_titles:
-                    alt = link_best_titles[link]
-                    if alt and not is_generic_title(alt):
-                        source["title"] = alt
-
-            if is_generic_title(source.get("title")) and chunk_for_ref:
-                text = chunk_for_ref.get("text", "") or ""
-                extracted = extract_title(text)
-                if extracted and not is_generic_title(extracted):
-                    source["title"] = extracted
-
-            if is_generic_title(source.get("title")) and chunk_for_ref:
-                fb = title_from_text_fallback(chunk_for_ref.get("text", ""))
-                if fb and not is_generic_title(fb):
-                    source["title"] = fb
-
-            normalized = normalize_source_title(source.get("title"))
-            if normalized and not is_generic_title(normalized):
-                source["title"] = normalized
-            elif is_generic_title(normalized):
-                source["title"] = ""
+                source["title"] = resolve_chunk_title(chunk_for_ref)
 
             if link and "blog.naver.com" in link and "m.blog.naver.com" not in link:
                 source["link"] = link.replace("https://blog.naver.com", "https://m.blog.naver.com")
