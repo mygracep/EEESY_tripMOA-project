@@ -50,7 +50,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 
 [모바일 가독성 — 필드별 길이]
 균일한 길이로 작성. 아래를 반드시 지킬 것.
-- summary: 1~2문장, 40자 이내
+- summary: 1~2문장, 40자 이내. **[ref:N] 표기 금지** (출처 없이 요약만)
 - content 불릿 (- 줄): 20~35자, 설명식 짧은 문장. 단어 나열 금지
 - description: 2~3문장, 문장당 30~40자. 위치·분위기·특징·추천 이유 포함
 
@@ -182,7 +182,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - reviews: 해당 장소 **직접 방문·체험 후기**만. 다른 장소 후기 섞지 말 것.
 - **reviews 제외:** 질문·문의(?/궁금/할까요), 일정·동선 나열(/, ->), 의견·제안만(~포기하면, ~넣고 싶)
 - **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 일정·동선 조언, 추천/비추, 아쉬운 **경험**
-- 장소당 실후기 **3개 필수** (참고 후기에 3개 이상 있으면 반드시 3개). 1~2개만 넣지 말 것.
+- 장소당 실후기 **2~3개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상). **1개만 넣거나 reviews 빈 배열 금지.**
 - reviews.text: 참고 후기 **원문 전체**를 줄임·요약 없이 복사. 첫 문장만 잘라내지 말 것. 2~4문장·줄바꿈 포함 가능.
 - 후기 원문 그대로 인용, 요약·한 줄 압축 금지.
 - 부정 후기 1개 이상 포함 (질문형·의견형 negative 금지, 실제 아쉬운 **경험**만)
@@ -336,9 +336,10 @@ def is_valid_review_text(text: str) -> bool:
     return True
 
 
-def pick_place_reviews(reviews: list) -> list:
+def pick_place_reviews(reviews: list, min_count: int = 2, max_count: int = 3) -> list:
     strict: list = []
     relaxed_pool: list = []
+    raw_pool: list = []
 
     for r in reviews or []:
         if not isinstance(r, dict):
@@ -346,26 +347,41 @@ def pick_place_reviews(reviews: list) -> list:
         text = (r.get("text") or "").strip()
         if not text:
             continue
+        raw_pool.append(r)
         if is_valid_review_text(text):
             strict.append(r)
         elif is_relaxed_review_text(text):
             relaxed_pool.append(r)
 
-    out = strict[:3]
-    if len(out) >= 3:
-        return out
-
+    out = strict[:max_count]
     seen = {(r.get("text") or "").strip() for r in out}
-    for r in relaxed_pool:
+
+    def append(r: dict) -> None:
         text = (r.get("text") or "").strip()
-        if text in seen:
-            continue
+        if not text or text in seen:
+            return
         out.append(r)
         seen.add(text)
-        if len(out) >= 3:
-            break
 
-    return out[:3]
+    for r in relaxed_pool:
+        if len(out) >= max_count:
+            break
+        append(r)
+
+    if len(out) < min_count:
+        for r in raw_pool:
+            if len(out) >= min_count:
+                break
+            text = (r.get("text") or "").strip()
+            if len(text) < 8 or text in seen:
+                continue
+            if QUESTION_RE.search(text):
+                continue
+            if ITINERARY_DUMP_RE.search(text):
+                continue
+            append(r)
+
+    return out[:max_count]
 
 
 def filter_valid_reviews(reviews: list) -> list:
@@ -1240,6 +1256,9 @@ async def search(req: SearchRequest):
     ]
 
     result["map_title"] = extract_map_title(req.query, req.city)
+
+    if result.get("summary"):
+        result["summary"] = INLINE_REF_RE.sub(" ", str(result["summary"])).strip()
 
     return result
 
