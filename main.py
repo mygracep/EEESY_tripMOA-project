@@ -448,7 +448,7 @@ def pick_place_reviews(
     strict: list = []
     relaxed_pool: list = []
     raw_pool: list = []
-    seen_refs: set[int] = set()
+    seen_texts: set[str] = set()
     has_place_context = bool((place_name or "").strip())
 
     def is_relevant(r: dict) -> bool:
@@ -462,14 +462,14 @@ def pick_place_reviews(
         text = (r.get("text") or "").strip()
         if not text or not is_relevant(r):
             continue
+        if text in seen_texts:
+            continue
         ref_id = _review_ref_id(r)
         if ref_id is None:
             continue
-        if ref_id in seen_refs:
-            continue
         r["ref"] = ref_id
         raw_pool.append(r)
-        seen_refs.add(ref_id)
+        seen_texts.add(text)
         if is_valid_review_text(text):
             strict.append(r)
         elif is_relaxed_review_text(text):
@@ -732,6 +732,22 @@ async def extend_result_reviews(result: dict, chunks: list) -> None:
                     review["text"] = extended
 
 
+def validate_warning_ref(
+    warning: str, place_name: str, description: str, chunks: list | None
+) -> bool:
+    """warning의 ref가 실제로 해당 장소와 관련된 청크인지 확인."""
+    if not chunks:
+        return True
+    m = re.search(r"\[ref:(\d+)\]", warning)
+    if not m:
+        return True
+    ref_id = int(m.group(1))
+    if ref_id < 1 or ref_id > len(chunks):
+        return False
+    chunk_text = chunks[ref_id - 1].get("text", "")
+    return is_review_relevant_to_place(chunk_text, place_name, description)
+
+
 def postprocess_place_detail(pd: dict, chunks: list | None = None) -> None:
     raw_reviews = pd.get("reviews", []) or []
     for r in raw_reviews:
@@ -755,14 +771,17 @@ def postprocess_place_detail(pd: dict, chunks: list | None = None) -> None:
     if chunks and len(pd["reviews"]) < 2:
         backfill_reviews_from_chunks(pd, chunks, min_count=2, max_count=3)
     raw_warnings = pd.get("warnings") or []
+    place_name = pd.get("name") or ""
+    description = pd.get("description") or ""
+    sanitized = [
+        sanitize_warning_text(NUMBERED_LINE_RE.sub("", w).strip())
+        for w in raw_warnings
+        if w
+    ]
     pd["warnings"] = [
         w
-        for w in (
-            sanitize_warning_text(NUMBERED_LINE_RE.sub("", w).strip())
-            for w in raw_warnings
-            if w
-        )
-        if w
+        for w in sanitized
+        if w and validate_warning_ref(w, place_name, description, chunks)
     ]
     if not pd["warnings"]:
         inferred = infer_warnings_from_reviews(pd.get("reviews", []))
