@@ -158,7 +158,9 @@ JSON 외 다른 텍스트는 절대 출력금지.
   Day가 3개면 Day당 1~2개만. 숙소 2개 + Day 장소 3개 = 5개가 한계.
   6개 이상 places_detail 생성 금지 — JSON 출력이 깨질 수 있음.
 - places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (숙소 섹션은 places_detail 필수).
-  reviews 최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
+  reviews 최소 2개·최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
+  - 각 장소 reviews **최소 2개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상 포함). 1개만 넣는 것 금지.
+  - 같은 [ref:N]을 모든 장소에 반복 사용 금지. 장소마다 다른 출처 우선 사용. 참고 후기에 다양한 ref가 있다면 적극 활용할 것.
 - 마지막 섹션은 상황별추천이 아니라 여행 팁으로 끝낼 것.
 - 마지막 섹션: title "여행 팁" (이모지 없이), icon "💡", places_detail: []
 - 여행 팁 content 형식은 상황별추천과 동일:
@@ -706,7 +708,8 @@ ITINERARY_MODE_BLOCK = """
 □ Day content: 실제 **장소명**만. 카테고리 줄·동일 장소명 중복 금지. 이동 줄에 약 N분/N시간 필수
 □ Day에 🏨 숙소 없음 → icon 🏨 + title "숙소 추천" 섹션 별도 (places_detail 필수)
 □ 전체 places_detail name 합(숙소 포함) **5개 이하** — Day당 1~2개만
-□ 각 Day: content **장소명**마다 places_detail + reviews(최대 3) + warnings
+□ 각 Day: content **장소명**마다 places_detail + reviews(최소 2·최대 3) + warnings
+□ 장소마다 서로 다른 [ref:N] 우선 — 같은 ref를 모든 장소에 반복 금지
 □ 마지막만 title "여행 팁", icon "💡", places_detail: []
 """
 
