@@ -179,7 +179,9 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - places_detail 항목 수 = content의 **장소명** 항목 수와 동일. 순서도 동일하게.
 - name: content의 **장소명**과 정확히 일치
 - description: 2~3문장, 문장당 30~40자. 위치, 분위기, 특징, 추천 이유 포함. [ref:N] 포함 가능.
-- reviews: 해당 장소 **직접 방문·체험 후기**만. 다른 장소 후기 섞지 말 것.
+- reviews: 해당 장소 **직접 방문·체험 후기**만. 다른 장소·다른 메뉴 후기 섞지 말 것.
+  ✗ 예: "아키요시 타이메시 본점" places_detail에 "말차 모찌" 후기 (다른 가게/디저트) 넣기 금지
+  ✓ 후기는 장소명·대표 메뉴(도미밥/타이메시 등)와 직접 관련된 경험만
 - **reviews 제외:** 질문·문의(?/궁금/할까요), 일정·동선 나열(/, ->), 의견·제안만(~포기하면, ~넣고 싶)
 - **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 일정·동선 조언, 추천/비추, 아쉬운 **경험**
 - 장소당 실후기 **2~3개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상). **1개만 넣거나 reviews 빈 배열 금지.**
@@ -309,6 +311,64 @@ ITINERARY_DUMP_RE = re.compile(
     re.I,
 )
 
+SKIP_MATCH_TOKENS = {
+    "본점", "지점", "점", "마쓰야마", "오사카", "교토", "도쿄", "후쿠오카", "나고야",
+    "삿포로", "오키나와", "일본", "여행", "식당", "카페", "레스토랑", "호텔", "숙소",
+}
+
+DESSERT_MARKERS_RE = re.compile(
+    r"(?:말차|모찌|아이스크림|케이크|디저트|마카롱|와플|빙수|パフェ|パンケーキ)",
+    re.I,
+)
+SAVORY_MARKERS_RE = re.compile(
+    r"(?:도미밥|타이메시|타마고|냉면|라멘|스시|초밥|회|우동|소바|丼|焼き|定食|고기|삼겹|갈비)",
+    re.I,
+)
+
+
+def extract_place_match_terms(place_name: str, description: str = "") -> list[str]:
+    terms: set[str] = set()
+    name = re.sub(r"\*\*", "", place_name or "").strip()
+    desc = re.sub(r"\s*\[ref:\d+\]", "", description or "")
+    desc = re.sub(r"\*\*", "", desc).strip()
+
+    def add(raw: str) -> None:
+        cleaned = re.sub(r"(?:본점|지점|점)$", "", raw).strip()
+        if len(cleaned) >= 2 and cleaned not in SKIP_MATCH_TOKENS:
+            terms.add(cleaned)
+
+    for part in re.split(r"[\s·・/]+", name):
+        add(part)
+
+    for w in re.findall(r"[가-힣]{2,}|[a-zA-Z]{3,}|[ぁ-んァ-ン一-龯]{2,}", f"{name} {desc}"):
+        add(w)
+
+    return list(terms)
+
+
+def is_review_relevant_to_place(text: str, place_name: str, description: str = "") -> bool:
+    review = (text or "").strip()
+    if not review:
+        return False
+
+    terms = extract_place_match_terms(place_name, description)
+    if not terms:
+        return True
+
+    if any(t in review for t in terms):
+        return True
+
+    context = f"{place_name} {description}"
+    place_savory = bool(SAVORY_MARKERS_RE.search(context))
+    place_dessert = bool(DESSERT_MARKERS_RE.search(context))
+
+    if place_savory and DESSERT_MARKERS_RE.search(review) and not SAVORY_MARKERS_RE.search(review):
+        return False
+    if place_dessert and SAVORY_MARKERS_RE.search(review) and not DESSERT_MARKERS_RE.search(review):
+        return False
+
+    return False
+
 
 def is_relaxed_review_text(text: str) -> bool:
     t = (text or "").strip()
@@ -336,16 +396,28 @@ def is_valid_review_text(text: str) -> bool:
     return True
 
 
-def pick_place_reviews(reviews: list, min_count: int = 2, max_count: int = 3) -> list:
+def pick_place_reviews(
+    reviews: list,
+    min_count: int = 2,
+    max_count: int = 3,
+    place_name: str = "",
+    description: str = "",
+) -> list:
     strict: list = []
     relaxed_pool: list = []
     raw_pool: list = []
+    has_place_context = bool((place_name or "").strip())
+
+    def is_relevant(r: dict) -> bool:
+        if not has_place_context:
+            return True
+        return is_review_relevant_to_place(r.get("text") or "", place_name, description)
 
     for r in reviews or []:
         if not isinstance(r, dict):
             continue
         text = (r.get("text") or "").strip()
-        if not text:
+        if not text or not is_relevant(r):
             continue
         raw_pool.append(r)
         if is_valid_review_text(text):
@@ -572,7 +644,11 @@ async def extend_result_reviews(result: dict, chunks: list) -> None:
 
 
 def postprocess_place_detail(pd: dict) -> None:
-    pd["reviews"] = pick_place_reviews(pd.get("reviews", []))
+    pd["reviews"] = pick_place_reviews(
+        pd.get("reviews", []),
+        place_name=pd.get("name") or "",
+        description=pd.get("description") or "",
+    )
     raw_warnings = pd.get("warnings") or []
     pd["warnings"] = [
         w
