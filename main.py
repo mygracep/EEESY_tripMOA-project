@@ -834,6 +834,46 @@ def enrich_place_warnings(result: dict, chunks: list | None = None) -> None:
             postprocess_place_detail(pd, chunks)
 
 
+def _place_detail_rank(pd: dict, chunks: list | None) -> tuple[int, int]:
+    """(순위, 리뷰수) — 순위 높을수록 우선. 0리뷰는 호출 전에 걸러짐."""
+    reviews = pd.get("reviews", [])
+    n = len(reviews)
+    if n == 0:
+        return (0, 0)
+
+    article_ids = set()
+    if chunks:
+        for r in reviews:
+            ref = _review_ref_id(r)
+            if ref and 1 <= ref <= len(chunks):
+                aid = chunks[ref - 1].get("article_id")
+                if aid is not None:
+                    article_ids.add(aid)
+    diverse = len(article_ids) >= 2
+
+    if n >= 3 and diverse:
+        rank = 4
+    elif n >= 2 and diverse:
+        rank = 3
+    elif n >= 2:
+        rank = 2
+    else:
+        rank = 1
+    return (rank, n)
+
+
+def rank_and_trim_places_detail(
+    result: dict, chunks: list | None, max_per_section: int = 3
+) -> None:
+    for section in result.get("sections", []):
+        candidates = [
+            pd for pd in section.get("places_detail", [])
+            if pd.get("reviews")
+        ]
+        candidates.sort(key=lambda pd: _place_detail_rank(pd, chunks), reverse=True)
+        section["places_detail"] = candidates[:max_per_section]
+
+
 ITINERARY_QUERY_RE = re.compile(
     r"(?:일정|코스|동선|루트|여행\s*계획|당일치기|하루\s*코스|"
     r"\d+\s*박\s*\d+\s*일|\d+박\d+일|\d+일\s*여행)",
@@ -1507,6 +1547,7 @@ async def search(req: SearchRequest):
         normalize_itinerary_response(result, chunks)
         await extend_result_reviews(result, chunks)
     enrich_place_warnings(result, chunks)
+    rank_and_trim_places_detail(result, chunks, max_per_section=3)
 
     # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
     place_names = collect_place_names_for_api(result, limit=3, itinerary=itinerary_query)
