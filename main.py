@@ -519,6 +519,14 @@ def backfill_reviews_from_chunks(
     existing_texts = {(r.get("text") or "").strip() for r in reviews}
     existing_refs = {r.get("ref") for r in reviews if r.get("ref") is not None}
 
+    place_article_ids: set = set()
+    for chunk in chunks:
+        text = (chunk.get("text") or "").strip()
+        if is_review_relevant_to_place(text, place_name, description):
+            article_id = chunk.get("article_id")
+            if article_id:
+                place_article_ids.add(article_id)
+
     for i, chunk in enumerate(chunks):
         if len(reviews) >= max_count:
             break
@@ -529,10 +537,16 @@ def backfill_reviews_from_chunks(
         text = clean_review_text(text)
         if not text or text in existing_texts:
             continue
-        if not is_review_relevant_to_place(text, place_name, description):
-            continue
         if not is_relaxed_review_text(text):
             continue
+
+        article_id = chunk.get("article_id")
+        is_same_article = article_id and article_id in place_article_ids
+        is_direct_match = is_review_relevant_to_place(text, place_name, description)
+
+        if not (is_direct_match or is_same_article):
+            continue
+
         reviews.append({
             "text": text,
             "sentiment": "positive",
@@ -1223,9 +1237,9 @@ async def search(req: SearchRequest):
     query_vector = result.embeddings[0].values
 
     itinerary_query = is_itinerary_query(req.query)
-    match_count = 15 if itinerary_query else req.match_count
+    match_count = req.match_count
 
-    # 2. 벡터 검색 (유튜브는 RPC 없거나 실패 시 빈 배열 — 후기 검색은 계속)
+    # 2. 벡터 검색 (non-ad 우선, 부족 시 ad 보완)
     res = await asyncio.to_thread(
         lambda: supabase.rpc("match_travel_chunks", {
             "query_embedding": query_vector,
@@ -1233,11 +1247,28 @@ async def search(req: SearchRequest):
             "match_count": match_count,
             "filter_city": req.city,
             "filter_category": req.category,
-            "filter_travel_style": req.travel_style
+            "filter_travel_style": req.travel_style,
+            "filter_is_ad": False,
         }).execute()
     )
+    non_ad_chunks = res.data or []
 
-    chunks = res.data
+    chunks = non_ad_chunks
+
+    if len(non_ad_chunks) < match_count:
+        need = match_count - len(non_ad_chunks)
+        res_ad = await asyncio.to_thread(
+            lambda: supabase.rpc("match_travel_chunks", {
+                "query_embedding": query_vector,
+                "match_threshold": req.match_threshold,
+                "match_count": need,
+                "filter_city": req.city,
+                "filter_category": req.category,
+                "filter_travel_style": req.travel_style,
+                "filter_is_ad": True,
+            }).execute()
+        )
+        chunks = non_ad_chunks + (res_ad.data or [])
 
     youtube_videos = []
     try:
