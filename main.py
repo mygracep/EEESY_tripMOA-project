@@ -7,7 +7,7 @@ import httpx
 import asyncio
 import sys
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
@@ -20,6 +20,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
+BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -165,10 +166,12 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - Day 섹션 content에 🏨 숙소 넣지 말 것. 숙소는 별도 섹션으로 분리.
 - Day 섹션 다음·여행 팁 직전에 icon "🏨", title "숙소 추천" (title에 🏨 이모지 중복 금지, icon만 사용).
 - Day에는 🍜 맛집·⛩️ 관광·🚆 이동 포함 가능.
-- **전체 sections의 places_detail name 합(숙소 섹션 포함) 최대 5개 엄수.**
-  Day가 3개면 Day당 1~2개만. 숙소 2개 + Day 장소 3개 = 5개가 한계.
-  6개 이상 places_detail 생성 금지 — JSON 출력이 깨질 수 있음.
-- places_detail: 각 Day의 content **장소명**마다 항목 필수. 빈 배열 금지 (숙소 섹션은 places_detail 필수).
+- **Day(섹션)당 places_detail은 최대 3개.** 언급된 장소가 3개보다 많으면,
+  참고 후기에서 해당 장소의 실경험 리뷰가 2개 이상 확보되는 장소를 우선 선정.
+- 리뷰가 1개 이하로만 확인되는 장소는 places_detail을 만들지 말고 content에 이름만 언급.
+- 정말 인기 명소라 후기 자체가 없는 경우가 아니면, 리뷰 부족을 이유로 장소 자체를
+  일정에서 빼지는 말 것 — 리뷰만 생략하고 이름은 유지.
+- places_detail: 선정된 장소(위 기준)마다 항목 작성. Day당 최대 3개. 숙소 섹션은 places_detail 필수.
   reviews 최소 2개·최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
   - 각 장소 reviews **최소 2개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상 포함). 1개만 넣는 것 금지.
   - 같은 [ref:N]을 모든 장소에 반복 사용 금지. 장소마다 다른 출처 우선 사용. 참고 후기에 다양한 ref가 있다면 적극 활용할 것.
@@ -188,12 +191,14 @@ JSON 외 다른 텍스트는 절대 출력금지.
 
 [places_detail 생성 기준]
 - 추천형·일정형 Day 섹션 모두 places_detail 배열 필수. 섹션 레벨 reviews 필드 사용 금지.
-- 일정형: Day 섹션 places_detail 비우면 안 됨. content 장소 수 = places_detail 항목 수.
-- places_detail name 개수는 content의 **장소명** 개수와 동일해야 함. 5개로 제한하지 않음.
-- places_detail 항목 수 = content의 **장소명** 항목 수와 동일. 순서도 동일하게.
+- 일정형: 선정된 장소만 places_detail 작성. Day당 최대 3개. 리뷰 부족 장소는 생략.
+- places_detail 대상 선정: 참고 후기에서 해당 장소 리뷰(경험 서술)가 2개 이상 나오는
+  장소를 우선. 후기가 1개뿐이거나 없으면 해당 장소는 places_detail 생성 생략
+  (content 언급은 유지 가능).
+- 추천형: places_detail 항목 수 = content **장소명** 수·순서와 동일.
 - name: content의 **장소명**과 정확히 일치
 - description: 2~3문장, 문장당 30~40자. 위치, 분위기, 특징, 추천 이유 포함. [ref:N] 포함 가능.
-- **content와 places_detail 항목 수·순서 동일.** 장소마다 🏨 **장소명** 줄을 따로 쓸 것.
+- **추천형:** content와 places_detail 항목 수·순서 동일. 장소마다 🏨 **장소명** 줄을 따로 쓸 것.
 - **한 places_detail.description에 숙소 2개 이상 넣지 말 것.** 다른 호텔은 별도 places_detail 항목 + content 🏨 줄.
 - reviews: 해당 장소 **직접 방문·체험 후기**만. 다른 장소·다른 메뉴 후기 섞지 말 것.
   ✗ 예: "아키요시 타이메시 본점" places_detail에 "말차 모찌" 후기 (다른 가게/디저트) 넣기 금지
@@ -420,7 +425,7 @@ def is_valid_review_text(text: str) -> bool:
     return True
 
 
-def clean_review_text(text: str, max_len: int = 200) -> str:
+def clean_review_text(text: str, max_len: int = 500) -> str:
     """청크 전체가 review로 들어온 경우 정리."""
     t = (text or "").strip()
     if not t:
@@ -436,6 +441,25 @@ def clean_review_text(text: str, max_len: int = 200) -> str:
         return ""
 
     return t
+
+
+async def fetch_place_reviews(
+    place_name: str, city: str | None, limit: int = 10
+) -> list[dict]:
+    terms = extract_place_match_terms(place_name)
+    if not terms:
+        return []
+    core_term = max(terms, key=len)
+    query = (
+        supabase.table("travel_chunks")
+        .select("article_id, chunk_index, text, link, date, is_ad, title")
+        .ilike("place_name", f"%{core_term}%")
+    )
+    if city:
+        query = query.eq("city", city)
+    query = query.order("is_ad").limit(limit)
+    res = await asyncio.to_thread(query.execute)
+    return res.data or []
 
 
 def pick_place_reviews(
@@ -824,8 +848,9 @@ ITINERARY_MODE_BLOCK = """
 □ Day 섹션 title "DAY1 — 소제목", icon "" (이모지 없음)
 □ Day content: 실제 **장소명**만. 카테고리 줄·동일 장소명 중복 금지. 이동 줄에 약 N분/N시간 필수
 □ Day에 🏨 숙소 없음 → icon 🏨 + title "숙소 추천" 섹션 별도 (places_detail 필수)
-□ 전체 places_detail name 합(숙소 포함) **5개 이하** — Day당 1~2개만
-□ 각 Day: content **장소명**마다 places_detail + reviews(최소 2·최대 3) + warnings
+□ Day(섹션)당 places_detail 최대 3개, 리뷰 2개 이상 확보 가능한 장소 우선 선별
+□ 리뷰 1개 이하 장소는 places_detail 생략(이름만 content 유지), 억지로 채우지 않음
+□ 각 Day: 선정된 places_detail마다 reviews(최소 2·최대 3) + warnings
 □ 장소마다 서로 다른 [ref:N] 우선 — 같은 ref를 모든 장소에 반복 금지
 □ 마지막만 title "여행 팁", icon "💡", places_detail: []
 """
@@ -1098,8 +1123,24 @@ class SearchRequest(BaseModel):
 
 
 async def get_place_details(place_name: str, city: str = None) -> dict:
-    query = f"{place_name} {city}" if city else place_name
+    cache_key = f"{place_name}|{city or ''}"
 
+    cached = await asyncio.to_thread(
+        lambda: supabase.table("place_cache")
+        .select("lat, lng, photo_urls")
+        .eq("place_key", cache_key)
+        .limit(1)
+        .execute()
+    )
+    if cached.data:
+        row = cached.data[0]
+        return {
+            "lat": row["lat"],
+            "lng": row["lng"],
+            "photo_urls": row["photo_urls"],
+        }
+
+    query = f"{place_name} {city}" if city else place_name
     async with httpx.AsyncClient(timeout=10.0) as client:
         search_res = await client.post(
             "https://places.googleapis.com/v1/places:searchText",
@@ -1108,10 +1149,7 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
                 "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
                 "X-Goog-FieldMask": "places.displayName,places.location,places.photos"
             },
-            json={
-                "textQuery": query,
-                "languageCode": "ko"
-            }
+            json={"textQuery": query, "languageCode": "ko"}
         )
         data = search_res.json()
 
@@ -1126,15 +1164,21 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
         if place.get("photos"):
             for photo in place["photos"][:3]:
                 photo_urls.append(
-                    f"https://places.googleapis.com/v1/{photo['name']}/media"
-                    f"?maxWidthPx=800&key={GOOGLE_PLACES_API_KEY}"
+                    f"{BACKEND_BASE_URL}/photo/{photo['name']}?maxWidthPx=800"
                 )
 
-        return {
-            "lat": lat,
-            "lng": lng,
-            "photo_urls": photo_urls
-        }
+    result = {"lat": lat, "lng": lng, "photo_urls": photo_urls}
+
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("place_cache")
+            .upsert({"place_key": cache_key, **result})
+            .execute()
+        )
+    except Exception as e:
+        print(f"place_cache 저장 실패: {e}", flush=True, file=sys.stderr)
+
+    return result
 
 
 def youtube_video_id(url: str) -> str | None:
@@ -1226,6 +1270,20 @@ async def enrich_youtube_titles(videos: list[dict]) -> list[dict]:
     return enriched
 
 
+@app.get("/photo/{photo_name:path}")
+async def photo_proxy(photo_name: str, maxWidthPx: int = 800):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            f"https://places.googleapis.com/v1/{photo_name}/media",
+            params={"maxWidthPx": maxWidthPx, "key": GOOGLE_PLACES_API_KEY},
+            follow_redirects=True,
+        )
+    return Response(
+        content=resp.content,
+        media_type=resp.headers.get("content-type", "image/jpeg"),
+    )
+
+
 @app.post("/search")
 async def search(req: SearchRequest):
     # 1. 쿼리 임베딩
@@ -1269,6 +1327,35 @@ async def search(req: SearchRequest):
             }).execute()
         )
         chunks = non_ad_chunks + (res_ad.data or [])
+
+    place_names_in_chunks = set()
+    for c in chunks:
+        if c.get("place_name"):
+            for p in c["place_name"].split(","):
+                place_names_in_chunks.add(p.strip())
+
+    place_names_in_chunks = list(place_names_in_chunks)[:15]
+
+    if place_names_in_chunks:
+        extra_tasks = [
+            fetch_place_reviews(p, req.city)
+            for p in place_names_in_chunks
+        ]
+        try:
+            extra_results = await asyncio.gather(*extra_tasks)
+        except Exception as e:
+            print(f"fetch_place_reviews 실패: {e}", flush=True, file=sys.stderr)
+            extra_results = []
+
+        extra_chunks = []
+        for r in extra_results:
+            extra_chunks.extend(r)
+
+        existing_links = {c.get("link") for c in chunks}
+        for c in extra_chunks:
+            if c.get("link") not in existing_links:
+                chunks.append(c)
+                existing_links.add(c.get("link"))
 
     youtube_videos = []
     try:
