@@ -353,6 +353,17 @@ TITLE_PREFIX_RE = re.compile(r"^제목\s*[:：]\s*.+?(?=\n\n|\Z)", re.DOTALL)
 NUMBERED_FIELD_RE = re.compile(
     r"\d\.\s*(?:내가주는\s*추천점수|상점명|지역|상점위치|분위기)\s*[:：]"
 )
+QNA_SPLIT_RE = re.compile(r"질문\s*[:：].*?댓글\s*[:：]\s*", re.S)
+
+
+def clean_qna_text(text: str) -> str:
+    """qna 청크 전용: 질문 블록 제거 + 남은 질문성 줄 제거."""
+    t = text or ""
+    m = QNA_SPLIT_RE.search(t)
+    if m:
+        t = t[m.end():].strip()
+    lines = [l for l in t.split("\n") if not QUESTION_RE.search(l)]
+    return "\n".join(lines).strip()
 
 SKIP_MATCH_TOKENS = {
     "본점", "지점", "점", "마쓰야마", "오사카", "교토", "도쿄", "후쿠오카", "나고야",
@@ -446,6 +457,7 @@ def clean_review_text(text: str, max_len: int = 500) -> str:
     if not t:
         return t
 
+    t = clean_qna_text(t)
     if NUMBERED_FIELD_RE.search(t):
         return ""
 
@@ -1520,7 +1532,8 @@ async def search(req: SearchRequest):
         print(format_chunk_log(i, c), flush=True, file=sys.stderr)
 
     context = "\n\n".join([
-        f"[id:{i + 1}] [출처: {c.get('link', '')}] [날짜: {c.get('date', '')}] [제목: {resolve_chunk_title(c)}]\n{c.get('text') or ''}"
+        f"[id:{i + 1}] [출처: {c.get('link', '')}] [날짜: {c.get('date', '')}] [제목: {resolve_chunk_title(c)}]\n"
+        f"{clean_qna_text(c.get('text') or '') if c.get('content_type') == 'qna' else (c.get('text') or '')}"
         for i, c in enumerate(chunks)
     ])
 
