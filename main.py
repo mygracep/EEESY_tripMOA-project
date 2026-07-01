@@ -23,6 +23,20 @@ GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
 PLACE_PHOTOS_ENABLED = False
 
+CITY_ALIASES = {
+    "마쓰야마": ["마쓰야마", "마츠야마", "松山", "도고온천", "시코쿠"],
+    "오사카": ["오사카", "大阪", "간사이", "난바", "우메다", "도톤보리"],
+    "시즈오카": ["시즈오카", "静岡", "후지산", "아타미", "이즈"],
+}
+
+
+def is_city_relevant_qna(chunk: dict, city: str | None) -> bool:
+    if not city or chunk.get("content_type") != "qna":
+        return True
+    aliases = CITY_ALIASES.get(city, [city])
+    text = f"{chunk.get('title','')} {chunk.get('text','')}"
+    return any(a in text for a in aliases)
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -874,10 +888,10 @@ def rank_and_trim_places_detail(
         section["places_detail"] = candidates[:max_per_section]
 
 
-ITINERARY_QUERY_RE = re.compile(
-    r"(?:일정|코스|동선|루트|여행\s*계획|당일치기|하루\s*코스|"
-    r"\d+\s*박\s*\d+\s*일|\d+박\d+일|\d+일\s*여행)",
-    re.IGNORECASE,
+ITINERARY_KEYWORDS_RE = re.compile(r"일정|코스|동선|루트|여행\s*계획|당일치기|하루\s*코스")
+DURATION_RE = re.compile(r"\d+\s*박\s*\d+\s*일|\d+박\d+일|\d+일\s*여행")
+SINGLE_CATEGORY_ASK_RE = re.compile(
+    r"(숙소|호텔|료칸|숙박|맛집|식당|카페|관광지)[^.?!\n]{0,30}추천"
 )
 
 ITINERARY_MODE_BLOCK = """
@@ -922,7 +936,12 @@ def split_inline_place_blocks(content: str) -> str:
 
 
 def is_itinerary_query(query: str) -> bool:
-    return bool(ITINERARY_QUERY_RE.search(query or ""))
+    q = query or ""
+    if ITINERARY_KEYWORDS_RE.search(q):
+        return True
+    if SINGLE_CATEGORY_ASK_RE.search(q):
+        return False
+    return bool(DURATION_RE.search(q))
 
 
 def build_system_prompt(query: str) -> str:
@@ -1401,6 +1420,8 @@ async def search(req: SearchRequest):
             }).execute()
         )
         chunks = non_ad_chunks + (res_ad.data or [])
+
+    chunks = [c for c in chunks if is_city_relevant_qna(c, req.city)]
 
     place_names_in_chunks = set()
     for c in chunks:
