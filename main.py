@@ -1162,7 +1162,7 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
 
         photo_urls = []
         if place.get("photos"):
-            for photo in place["photos"][:3]:
+            for photo in place["photos"][:2]:
                 photo_urls.append(
                     f"{BACKEND_BASE_URL}/photo/{photo['name']}?maxWidthPx=800"
                 )
@@ -1294,6 +1294,35 @@ async def search(req: SearchRequest):
     )
     query_vector = result.embeddings[0].values
 
+    try:
+        cache_res = await asyncio.to_thread(
+            lambda: supabase.rpc("match_answer_cache", {
+                "query_embedding": query_vector,
+                "match_threshold": 0.95,
+                "filter_city": req.city,
+                "filter_category": req.category,
+                "filter_travel_style": req.travel_style,
+            }).execute()
+        )
+        if cache_res.data:
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase.table("search_logs").insert({
+                        "query": req.query,
+                        "city": req.city,
+                        "category": req.category,
+                        "travel_style": req.travel_style,
+                        "chunk_count": None,
+                        "had_result": True,
+                        "cache_hit": True,
+                    }).execute()
+                )
+            except Exception as e:
+                print(f"search_logs 저장 실패(캐시 히트): {e}", flush=True, file=sys.stderr)
+            return cache_res.data[0]["result"]
+    except Exception as e:
+        print(f"answer_cache 조회 실패: {e}", flush=True, file=sys.stderr)
+
     itinerary_query = is_itinerary_query(req.query)
     match_count = req.match_count
 
@@ -1377,6 +1406,20 @@ async def search(req: SearchRequest):
         )
 
     if not chunks:
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("search_logs").insert({
+                    "query": req.query,
+                    "city": req.city,
+                    "category": req.category,
+                    "travel_style": req.travel_style,
+                    "chunk_count": 0,
+                    "had_result": False,
+                    "cache_hit": False,
+                }).execute()
+            )
+        except Exception as e:
+            print(f"search_logs 저장 실패(결과없음): {e}", flush=True, file=sys.stderr)
         return {
             "summary": "관련 후기가 충분하지 않아요.",
             "sections": [],
@@ -1461,7 +1504,7 @@ async def search(req: SearchRequest):
     enrich_place_warnings(result, chunks)
 
     # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
-    place_names = collect_place_names_for_api(result, limit=5, itinerary=itinerary_query)
+    place_names = collect_place_names_for_api(result, limit=3, itinerary=itinerary_query)
 
     places = []
     if place_names:
@@ -1609,6 +1652,35 @@ async def search(req: SearchRequest):
         result["summary"] = INLINE_REF_RE.sub(" ", str(result["summary"])).strip()
 
     renumber_source_refs(result)
+
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("search_logs").insert({
+                "query": req.query,
+                "city": req.city,
+                "category": req.category,
+                "travel_style": req.travel_style,
+                "chunk_count": len(chunks),
+                "had_result": bool(chunks),
+                "cache_hit": False,
+            }).execute()
+        )
+    except Exception as e:
+        print(f"search_logs 저장 실패: {e}", flush=True, file=sys.stderr)
+
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("answer_cache").insert({
+                "query": req.query,
+                "query_embedding": query_vector,
+                "city": req.city,
+                "category": req.category,
+                "travel_style": req.travel_style,
+                "result": result,
+            }).execute()
+        )
+    except Exception as e:
+        print(f"answer_cache 저장 실패: {e}", flush=True, file=sys.stderr)
 
     return result
 
