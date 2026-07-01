@@ -21,6 +21,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
+PLACE_PHOTOS_ENABLED = False
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -1137,17 +1138,21 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
         return {
             "lat": row["lat"],
             "lng": row["lng"],
-            "photo_urls": row["photo_urls"],
+            "photo_urls": row["photo_urls"] if PLACE_PHOTOS_ENABLED else [],
         }
 
     query = f"{place_name} {city}" if city else place_name
+    field_mask = "places.displayName,places.location"
+    if PLACE_PHOTOS_ENABLED:
+        field_mask += ",places.photos"
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         search_res = await client.post(
             "https://places.googleapis.com/v1/places:searchText",
             headers={
                 "Content-Type": "application/json",
                 "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-                "X-Goog-FieldMask": "places.displayName,places.location,places.photos"
+                "X-Goog-FieldMask": field_mask,
             },
             json={"textQuery": query, "languageCode": "ko"}
         )
@@ -1161,7 +1166,7 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
         lng = place["location"]["longitude"]
 
         photo_urls = []
-        if place.get("photos"):
+        if PLACE_PHOTOS_ENABLED and place.get("photos"):
             for photo in place["photos"][:2]:
                 photo_urls.append(
                     f"{BACKEND_BASE_URL}/photo/{photo['name']}?maxWidthPx=800"
