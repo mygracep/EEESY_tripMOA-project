@@ -401,6 +401,16 @@ def extract_place_match_terms(place_name: str, description: str = "") -> list[st
     return list(terms)
 
 
+def trim_review_to_place_sentences(text: str, place_name: str, description: str = "") -> str:
+    """여러 장소가 섞인 리뷰에서, 이 장소와 직접 관련된 문장만 남김."""
+    sentences = re.split(r"(?<=[.!?요])\s*\n?", text)
+    terms = extract_place_match_terms(place_name, description)
+    if not terms:
+        return ""
+    relevant = [s for s in sentences if any(t in s for t in terms)]
+    return " ".join(relevant).strip() if relevant else ""
+
+
 def is_review_relevant_to_place(text: str, place_name: str, description: str = "") -> bool:
     review = (text or "").strip()
     if not review:
@@ -570,14 +580,6 @@ def backfill_reviews_from_chunks(
     existing_texts = {(r.get("text") or "").strip() for r in reviews}
     existing_refs = {r.get("ref") for r in reviews if r.get("ref") is not None}
 
-    place_article_ids: set = set()
-    for chunk in chunks:
-        text = (chunk.get("text") or "").strip()
-        if is_review_relevant_to_place(text, place_name, description):
-            article_id = chunk.get("article_id")
-            if article_id:
-                place_article_ids.add(article_id)
-
     for i, chunk in enumerate(chunks):
         if len(reviews) >= max_count:
             break
@@ -591,11 +593,7 @@ def backfill_reviews_from_chunks(
         if not is_relaxed_review_text(text):
             continue
 
-        article_id = chunk.get("article_id")
-        is_same_article = article_id and article_id in place_article_ids
-        is_direct_match = is_review_relevant_to_place(text, place_name, description)
-
-        if not (is_direct_match or is_same_article):
+        if not is_review_relevant_to_place(text, place_name, description):
             continue
 
         reviews.append({
@@ -835,6 +833,12 @@ def postprocess_place_detail(pd: dict, chunks: list | None = None) -> None:
     pd["reviews"] = validated
     if chunks and len(pd["reviews"]) < 2:
         backfill_reviews_from_chunks(pd, chunks, min_count=2, max_count=3)
+
+    for r in pd["reviews"]:
+        r["text"] = trim_review_to_place_sentences(
+            r["text"], pd.get("name", ""), pd.get("description", "")
+        )
+    pd["reviews"] = [r for r in pd["reviews"] if (r.get("text") or "").strip()]
     raw_warnings = pd.get("warnings") or []
     place_name = pd.get("name") or ""
     description = pd.get("description") or ""
