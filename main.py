@@ -1417,7 +1417,7 @@ async def search(req: SearchRequest):
         config={"output_dimensionality": 768}
     )
     query_vector = result.embeddings[0].values
-    print(f"[임베딩] 차원: {len(query_vector)}, 앞 5개 값: {query_vector[:5]}", flush=True, file=sys.stderr)
+    print(f"[임베딩] 타입: {type(query_vector)}, 차원: {len(query_vector)}, 앞 5개 값: {query_vector[:5]}", flush=True, file=sys.stderr)
 
     try:
         cache_res = await asyncio.to_thread(
