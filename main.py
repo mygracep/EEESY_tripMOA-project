@@ -1453,6 +1453,7 @@ async def search(req: SearchRequest):
     itinerary_query = is_itinerary_query(req.query)
     match_count = req.match_count
     print(f"[요청확인] city={req.city!r}, category={req.category!r}, travel_style={req.travel_style!r}, match_threshold={req.match_threshold}", flush=True, file=sys.stderr)
+    print(f"[인코딩] city={req.city!r}, utf8_bytes={len(req.city.encode('utf-8')) if req.city else 0}", flush=True, file=sys.stderr)
 
     # 2. 벡터 검색 (non-ad 우선, 부족 시 ad 보완)
     res = await asyncio.to_thread(
