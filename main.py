@@ -1210,11 +1210,13 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
     )
     if cached.data:
         row = cached.data[0]
-        return {
-            "lat": row["lat"],
-            "lng": row["lng"],
-            "photo_urls": row["photo_urls"] if PLACE_PHOTOS_ENABLED else [],
-        }
+        cached_photos = row.get("photo_urls") or []
+        if not PLACE_PHOTOS_ENABLED or cached_photos:
+            return {
+                "lat": row["lat"],
+                "lng": row["lng"],
+                "photo_urls": cached_photos if PLACE_PHOTOS_ENABLED else [],
+            }
 
     query = f"{place_name} {city}" if city else place_name
     field_mask = "places.displayName,places.location"
@@ -1259,6 +1261,33 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
         print(f"place_cache 저장 실패: {e}", flush=True, file=sys.stderr)
 
     return result
+
+
+async def refresh_result_places(result: dict, city: str | None) -> None:
+    """places[].photo_urls 갱신 — answer_cache hit·stale place_cache 대응."""
+    if not PLACE_PHOTOS_ENABLED:
+        return
+    places = result.get("places")
+    if not places:
+        return
+    names = [p.get("name") for p in places if p.get("name")]
+    if not names:
+        return
+    details_list = await asyncio.gather(
+        *[get_place_details(name, city) for name in names]
+    )
+    details_by_name = {
+        name: details
+        for name, details in zip(names, details_list)
+        if details
+    }
+    for p in places:
+        details = details_by_name.get(p.get("name"))
+        if not details:
+            continue
+        p["lat"] = details["lat"]
+        p["lng"] = details["lng"]
+        p["photo_urls"] = details["photo_urls"]
 
 
 def youtube_video_id(url: str) -> str | None:
@@ -1399,7 +1428,9 @@ async def search(req: SearchRequest):
                 )
             except Exception as e:
                 print(f"search_logs 저장 실패(캐시 히트): {e}", flush=True, file=sys.stderr)
-            return cache_res.data[0]["result"]
+            cached_result = cache_res.data[0]["result"]
+            await refresh_result_places(cached_result, req.city)
+            return cached_result
     except Exception as e:
         print(f"answer_cache 조회 실패: {e}", flush=True, file=sys.stderr)
 
