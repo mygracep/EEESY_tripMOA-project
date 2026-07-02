@@ -105,7 +105,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
         {
           "name": "장소명 (content의 **장소명**과 동일)",
           "description": "해당 장소 핵심 특징 2~3문장 (문장당 30~40자). 위치, 분위기, 특징, 추천 이유 포함. [ref:N] 가능.",
-          "warnings": ["해당 장소 주의사항만. 없으면 []. 15자 이내 키워드형 [ref:N] 가능"],
+          "warnings": ["해당 장소 주의사항만. 없으면 []. 개조식 명사형 종결(~안됨/~없음/~주의), [ref:N] 가능"],
           "reviews": [
             {
               "text": "해당 장소에 대한 후기 원문 인용",
@@ -226,7 +226,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - reviews.text: 후기 작성자의 **경험·감상 문장**만 원문 그대로 인용. 2~4문장·줄바꿈 포함 가능. 요약·한 줄 압축·청크 전체 복사 금지.
 - 부정 후기 1개 이상 포함 (질문형·의견형 negative 금지, 실제 아쉬운 **경험**만)
 - sentiment: 긍정 "positive", 부정/아쉬운 점 "negative"
-- warnings: **negative reviews에서 주의사항을 15자 이내로 요약**하여 반드시 추출. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
+- warnings: **negative reviews에서 주의사항을 개조식 명사형으로 추출**하여 반드시 포함. 예약/휴무/막차/현금/입장제한/대기 등이 후기에 있으면 warnings에 1~2개 넣을 것. 비워두지 말 것. root warning 필드 사용 금지.
 - 팁·결론만 있는 섹션(여행 팁)은 places_detail: []
 
 
@@ -263,7 +263,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 
 [warning 생성 기준 — places_detail.warnings]
 - **negative reviews의 주의·아쉬운 점을 warnings로 변환** (아래 유형 우선, 실제 방문 경험 기반)
-- 아래 케이스 위주로 warning 생성. **실질적 주의·아쉬운 점**이면 15자 이내로 요약하여 포함.
+- 아래 케이스 위주로 warning 생성. **실질적 주의·아쉬운 점**이면 개조식 명사형으로 포함.
   ✔ 예약/티켓 필수
   ✔ 영업시간/휴무일
   ✔ 교통/이동 실질적 주의
@@ -274,9 +274,11 @@ JSON 외 다른 텍스트는 절대 출력금지.
   ✔ 혼잡 주의
   ✔ 가격 대비 아쉬움
 - 개인 의견, 일정 부족 느낌, 질문형 문장 → warning 생성 금지
-- 각 항목 **15자 이내** 키워드·구 형태. ~해요/~합니다 등 **종결 어미 금지**
+- 각 항목은 **개조식 명사형 종결**로 작성 (~안됨, ~없음, ~필요, ~주의, ~불가 등). 해요체·완결된 문장 금지.
+  예) "타이밍 티켓 없으면 입장 안됨", "현금만 가능, 카드 안됨", "저녁 6시 이후 상점가 문 닫음"
+- 글자수 제한 없음. 내용 전달에 필요한 만큼 자연스럽게.
 - 해당 negative review의 ref를 [ref:N]으로 표기
-- 예) negative "닌텐도 월드는 타이밍 티켓 없으면 못 들어가요" → warnings: ["타이밍 티켓 사전예약 [ref:1]"]
+- 예) negative "닌텐도 월드는 타이밍 티켓 없으면 못 들어가요" → warnings: ["타이밍 티켓 없으면 입장 안됨 [ref:1]"]
 - 정말 주의사항이 없는 positive-only 장소만 warnings: []
 - **최상위 warning 필드는 항상 []**
 
@@ -622,6 +624,23 @@ def _strip_warning_endings(body: str) -> str:
     return re.sub(r"(?:없는\s*건?|너무\s*없)$", "", body).strip()
 
 
+ENDING_CONVERSIONS = [
+    (re.compile(r"안\s*돼요\.?$"), "안됨"),
+    (re.compile(r"없어요\.?$"), "없음"),
+    (re.compile(r"있어요\.?$"), "있음"),
+    (re.compile(r"(?:해야|하셔야)\s*해요\.?$"), "필요"),
+    (re.compile(r"필요해요\.?$"), "필요"),
+    (re.compile(r"(?:주의|조심)하세요\.?$"), "주의"),
+]
+
+
+def _to_terse_ending(text: str) -> str:
+    for pattern, label in ENDING_CONVERSIONS:
+        if pattern.search(text):
+            return pattern.sub(label, text)
+    return text
+
+
 def _warning_clause_from_review(text: str, max_len: int = 15) -> str:
     clause = re.sub(r"\[ref:\d+\]", "", text.replace("**", "")).split("\n")[0]
     clause = re.split(r"[.。!?]", clause)[0].strip()
@@ -629,10 +648,7 @@ def _warning_clause_from_review(text: str, max_len: int = 15) -> str:
         return ""
     if QUESTION_RE.search(clause) or SCHEDULE_FEELING_RE.search(clause):
         return ""
-    clause = _strip_warning_endings(clause)
-    if len(clause) < 4:
-        return ""
-    return clause[:max_len]
+    return _to_terse_ending(clause)
 
 
 def sanitize_warning_text(text: str) -> str:
@@ -647,13 +663,8 @@ def sanitize_warning_text(text: str) -> str:
         if pattern.search(body):
             return f"{label}{suffix}"
 
-    body = _strip_warning_endings(body)
-
     if QUESTION_RE.search(body) or SCHEDULE_FEELING_RE.search(body):
         return f"주의사항 확인{suffix}" if suffix else ""
-
-    if len(body) > 16:
-        body = body[:15].rstrip()
 
     return f"{body}{suffix}" if body else suffix.strip()
 
@@ -1472,6 +1483,8 @@ async def search(req: SearchRequest):
         )
         chunks = non_ad_chunks + (res_ad.data or [])
 
+    chunks = [c for c in chunks if is_city_relevant_qna(c, req.city)]
+
     if len(chunks) < 5:
         fallback_threshold = max(0.5, req.match_threshold - 0.15)
         res_fallback = await asyncio.to_thread(
@@ -1485,13 +1498,15 @@ async def search(req: SearchRequest):
                 "filter_is_ad": None,
             }).execute()
         )
+        fallback_chunks = [
+            c for c in (res_fallback.data or [])
+            if is_city_relevant_qna(c, req.city)
+        ]
         existing_ids = {c.get("id") for c in chunks}
-        for c in (res_fallback.data or []):
+        for c in fallback_chunks:
             if c.get("id") not in existing_ids:
                 chunks.append(c)
                 existing_ids.add(c.get("id"))
-
-    chunks = [c for c in chunks if is_city_relevant_qna(c, req.city)]
 
     place_names_in_chunks = set()
     for c in chunks:
@@ -1637,8 +1652,8 @@ async def search(req: SearchRequest):
 
     if itinerary_query:
         normalize_itinerary_response(result, chunks)
-        await extend_result_reviews(result, chunks)
     enrich_place_warnings(result, chunks)
+    await extend_result_reviews(result, chunks)
     rank_and_trim_places_detail(result, chunks, max_per_section=3)
 
     # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
