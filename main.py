@@ -1465,6 +1465,7 @@ async def search(req: SearchRequest):
         }).execute()
     )
     non_ad_chunks = res.data or []
+    print(f"[검색1] non_ad: {len(non_ad_chunks)}개", flush=True, file=sys.stderr)
 
     chunks = non_ad_chunks
 
@@ -1482,11 +1483,14 @@ async def search(req: SearchRequest):
             }).execute()
         )
         chunks = non_ad_chunks + (res_ad.data or [])
+        print(f"[검색2] ad 보충 후: {len(chunks)}개", flush=True, file=sys.stderr)
 
     chunks = [c for c in chunks if is_city_relevant_qna(c, req.city)]
+    print(f"[필터] qna 필터 후: {len(chunks)}개", flush=True, file=sys.stderr)
 
     if len(chunks) < 5:
         fallback_threshold = max(0.5, req.match_threshold - 0.15)
+        print(f"[fallback] threshold {req.match_threshold} → {fallback_threshold}로 재검색", flush=True, file=sys.stderr)
         res_fallback = await asyncio.to_thread(
             lambda: supabase.rpc("match_travel_chunks", {
                 "query_embedding": query_vector,
@@ -1502,11 +1506,13 @@ async def search(req: SearchRequest):
             c for c in (res_fallback.data or [])
             if is_city_relevant_qna(c, req.city)
         ]
+        print(f"[fallback] 원본 {len(res_fallback.data or [])}개 → qna필터 후 {len(fallback_chunks)}개", flush=True, file=sys.stderr)
         existing_ids = {c.get("id") for c in chunks}
         for c in fallback_chunks:
             if c.get("id") not in existing_ids:
                 chunks.append(c)
                 existing_ids.add(c.get("id"))
+        print(f"[fallback] 최종 합산: {len(chunks)}개", flush=True, file=sys.stderr)
 
     place_names_in_chunks = set()
     for c in chunks:
