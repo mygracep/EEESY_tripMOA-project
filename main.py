@@ -1203,19 +1203,19 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
 
     cached = await asyncio.to_thread(
         lambda: supabase.table("place_cache")
-        .select("lat, lng, photo_urls")
+        .select("lat, lng, photo_urls, photos_checked")
         .eq("place_key", cache_key)
         .limit(1)
         .execute()
     )
     if cached.data:
         row = cached.data[0]
-        cached_photos = row.get("photo_urls") or []
-        if not PLACE_PHOTOS_ENABLED or cached_photos:
+        already_checked = row.get("photos_checked", False)
+        if not PLACE_PHOTOS_ENABLED or already_checked:
             return {
                 "lat": row["lat"],
                 "lng": row["lng"],
-                "photo_urls": cached_photos if PLACE_PHOTOS_ENABLED else [],
+                "photo_urls": (row.get("photo_urls") or []) if PLACE_PHOTOS_ENABLED else [],
             }
 
     query = f"{place_name} {city}" if city else place_name
@@ -1254,7 +1254,11 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
     try:
         await asyncio.to_thread(
             lambda: supabase.table("place_cache")
-            .upsert({"place_key": cache_key, **result})
+            .upsert({
+                "place_key": cache_key,
+                **result,
+                "photos_checked": PLACE_PHOTOS_ENABLED,
+            })
             .execute()
         )
     except Exception as e:
