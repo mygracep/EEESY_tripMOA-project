@@ -1437,6 +1437,25 @@ async def search(req: SearchRequest):
         )
         chunks = non_ad_chunks + (res_ad.data or [])
 
+    if len(chunks) < 5:
+        fallback_threshold = max(0.5, req.match_threshold - 0.15)
+        res_fallback = await asyncio.to_thread(
+            lambda: supabase.rpc("match_travel_chunks", {
+                "query_embedding": query_vector,
+                "match_threshold": fallback_threshold,
+                "match_count": match_count,
+                "filter_city": req.city,
+                "filter_category": req.category,
+                "filter_travel_style": req.travel_style,
+                "filter_is_ad": None,
+            }).execute()
+        )
+        existing_ids = {c.get("id") for c in chunks}
+        for c in (res_fallback.data or []):
+            if c.get("id") not in existing_ids:
+                chunks.append(c)
+                existing_ids.add(c.get("id"))
+
     chunks = [c for c in chunks if is_city_relevant_qna(c, req.city)]
 
     place_names_in_chunks = set()
