@@ -21,7 +21,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
-PLACE_PHOTOS_ENABLED = True
+PLACE_PHOTOS_ENABLED = False
 
 CITY_ALIASES = {
     "마쓰야마": ["마쓰야마", "마츠야마", "松山", "도고온천", "시코쿠"],
@@ -1828,16 +1828,17 @@ async def search(req: SearchRequest):
         print(f"search_logs 저장 실패: {e}", flush=True, file=sys.stderr)
 
     try:
-        await asyncio.to_thread(
-            lambda: supabase.table("answer_cache").insert({
-                "query": req.query,
-                "query_embedding": query_vector,
-                "city": req.city,
-                "category": req.category,
-                "travel_style": req.travel_style,
-                "result": result,
-            }).execute()
-        )
+        if result.get("sections"):
+            await asyncio.to_thread(
+                lambda: supabase.table("answer_cache").insert({
+                    "query": req.query,
+                    "query_embedding": query_vector,
+                    "city": req.city,
+                    "category": req.category,
+                    "travel_style": req.travel_style,
+                    "result": result,
+                }).execute()
+            )
     except Exception as e:
         print(f"answer_cache 저장 실패: {e}", flush=True, file=sys.stderr)
 
