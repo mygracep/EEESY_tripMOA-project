@@ -1452,6 +1452,7 @@ async def search(req: SearchRequest):
 
     itinerary_query = is_itinerary_query(req.query)
     match_count = req.match_count
+    print(f"[요청확인] city={req.city!r}, category={req.category!r}, travel_style={req.travel_style!r}, match_threshold={req.match_threshold}", flush=True, file=sys.stderr)
 
     # 2. 벡터 검색 (non-ad 우선, 부족 시 ad 보완)
     res = await asyncio.to_thread(
@@ -1465,6 +1466,7 @@ async def search(req: SearchRequest):
             "filter_is_ad": False,
         }).execute()
     )
+    print(f"[RPC원본] status: {getattr(res, 'status_code', 'N/A')}, data 개수: {len(res.data or [])}, data 샘플: {res.data[:2] if res.data else 'EMPTY'}", flush=True, file=sys.stderr)
     non_ad_chunks = res.data or []
     print(f"[검색1] non_ad: {len(non_ad_chunks)}개", flush=True, file=sys.stderr)
 
