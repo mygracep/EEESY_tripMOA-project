@@ -1411,13 +1411,19 @@ async def photo_proxy(photo_name: str, maxWidthPx: int = 800):
 @app.post("/search")
 async def search(req: SearchRequest):
     # 1. 쿼리 임베딩
+    embed_text = f"{req.city} {req.query}" if req.city else req.query
     result = await gemini_client.aio.models.embed_content(
         model="gemini-embedding-2",
-        contents=req.query,
+        contents=embed_text,
         config={"output_dimensionality": 768}
     )
     query_vector = result.embeddings[0].values
     print(f"[임베딩] 타입: {type(query_vector)}, 차원: {len(query_vector)}, 앞 5개 값: {query_vector[:5]}", flush=True, file=sys.stderr)
+
+    non_ad_count = 0
+    ad_count = 0
+    qna_filtered_count = 0
+    fallback_used = False
 
     try:
         cache_res = await asyncio.to_thread(
@@ -1469,6 +1475,7 @@ async def search(req: SearchRequest):
     )
     print(f"[RPC원본] status: {getattr(res, 'status_code', 'N/A')}, data 개수: {len(res.data or [])}, data 샘플: {res.data[:2] if res.data else 'EMPTY'}", flush=True, file=sys.stderr)
     non_ad_chunks = res.data or []
+    non_ad_count = len(non_ad_chunks)
     print(f"[검색1] non_ad: {len(non_ad_chunks)}개", flush=True, file=sys.stderr)
 
     chunks = non_ad_chunks
@@ -1487,12 +1494,16 @@ async def search(req: SearchRequest):
             }).execute()
         )
         chunks = non_ad_chunks + (res_ad.data or [])
+        ad_count = len(res_ad.data or [])
         print(f"[검색2] ad 보충 후: {len(chunks)}개", flush=True, file=sys.stderr)
 
+    chunks_before_qna = len(chunks)
     chunks = [c for c in chunks if is_city_relevant_qna(c, req.city)]
+    qna_filtered_count = chunks_before_qna - len(chunks)
     print(f"[필터] qna 필터 후: {len(chunks)}개", flush=True, file=sys.stderr)
 
     if len(chunks) < 5:
+        fallback_used = True
         res_debug = await asyncio.to_thread(
             lambda: supabase.rpc("match_travel_chunks", {
                 "query_embedding": query_vector,
@@ -1680,6 +1691,16 @@ async def search(req: SearchRequest):
     await extend_result_reviews(result, chunks)
     rank_and_trim_places_detail(result, chunks, max_per_section=3)
 
+    all_places_detail = [
+        pd for section in result.get("sections", [])
+        for pd in section.get("places_detail", [])
+    ]
+    places_detail_count = len(all_places_detail)
+    avg_reviews_per_place = (
+        sum(len(pd.get("reviews", [])) for pd in all_places_detail) / places_detail_count
+        if places_detail_count else 0
+    )
+
     # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
     place_names = collect_place_names_for_api(result, limit=3, itinerary=itinerary_query)
 
@@ -1840,6 +1861,12 @@ async def search(req: SearchRequest):
                 "chunk_count": len(chunks),
                 "had_result": bool(chunks),
                 "cache_hit": False,
+                "non_ad_count": non_ad_count,
+                "ad_count": ad_count,
+                "qna_filtered_count": qna_filtered_count,
+                "fallback_used": fallback_used,
+                "places_detail_count": places_detail_count,
+                "avg_reviews_per_place": round(avg_reviews_per_place, 2),
             }).execute()
         )
     except Exception as e:
