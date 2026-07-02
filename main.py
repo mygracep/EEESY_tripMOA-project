@@ -1490,6 +1490,20 @@ async def search(req: SearchRequest):
     print(f"[필터] qna 필터 후: {len(chunks)}개", flush=True, file=sys.stderr)
 
     if len(chunks) < 5:
+        res_debug = await asyncio.to_thread(
+            lambda: supabase.rpc("match_travel_chunks", {
+                "query_embedding": query_vector,
+                "match_threshold": 0.0,
+                "match_count": 10,
+                "filter_city": req.city,
+                "filter_category": req.category,
+                "filter_travel_style": req.travel_style,
+                "filter_is_ad": None,
+            }).execute()
+        )
+        for c in (res_debug.data or [])[:10]:
+            print(f"[디버그] sim={c.get('similarity'):.3f} | {c.get('title','')[:30]}", flush=True, file=sys.stderr)
+
         fallback_threshold = max(0.5, req.match_threshold - 0.15)
         print(f"[fallback] threshold {req.match_threshold} → {fallback_threshold}로 재검색", flush=True, file=sys.stderr)
         res_fallback = await asyncio.to_thread(
