@@ -30,8 +30,8 @@ CITY_ALIASES = {
 }
 
 
-def is_city_relevant_qna(chunk: dict, city: str | None) -> bool:
-    if not city or chunk.get("content_type") != "qna":
+def is_city_relevant(chunk: dict, city: str | None) -> bool:
+    if not city:
         return True
     aliases = CITY_ALIASES.get(city, [city])
     text = f"{chunk.get('title','')} {chunk.get('text','')}"
@@ -1498,7 +1498,7 @@ async def search(req: SearchRequest):
         print(f"[검색2] ad 보충 후: {len(chunks)}개", flush=True, file=sys.stderr)
 
     chunks_before_qna = len(chunks)
-    chunks = [c for c in chunks if is_city_relevant_qna(c, req.city)]
+    chunks = [c for c in chunks if is_city_relevant(c, req.city)]
     qna_filtered_count = chunks_before_qna - len(chunks)
     print(f"[필터] qna 필터 후: {len(chunks)}개", flush=True, file=sys.stderr)
 
@@ -1533,7 +1533,7 @@ async def search(req: SearchRequest):
         )
         fallback_chunks = [
             c for c in (res_fallback.data or [])
-            if is_city_relevant_qna(c, req.city)
+            if is_city_relevant(c, req.city)
         ]
         print(f"[fallback] 원본 {len(res_fallback.data or [])}개 → qna필터 후 {len(fallback_chunks)}개", flush=True, file=sys.stderr)
         existing_ids = {c.get("id") for c in chunks}
