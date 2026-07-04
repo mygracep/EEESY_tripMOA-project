@@ -551,7 +551,7 @@ async def fetch_place_reviews(
     core_term = max(terms, key=len)
     query = (
         supabase.table("travel_chunks")
-        .select("article_id, chunk_index, text, link, date, is_ad, title")
+        .select("article_id, chunk_index, text, link, date, is_ad, title, place_name")
         .ilike("place_name", f"%{core_term}%")
     )
     if city:
