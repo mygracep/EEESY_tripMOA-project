@@ -437,6 +437,66 @@ def is_review_relevant_to_place(text: str, place_name: str, description: str = "
     return False
 
 
+TEMPLATE_SCORE_RE = re.compile(r"추천점수\s*[:：]\s*([1-5])")
+
+
+def parse_template_score(text: str) -> int | None:
+    """맛집/숙박 정형 템플릿의 '추천점수' 필드 파싱 (없으면 None)."""
+    m = TEMPLATE_SCORE_RE.search(text or "")
+    return int(m.group(1)) if m else None
+
+
+def build_place_candidates(
+    chunks: list,
+    max_places: int = 8,
+    reviews_per_place: int = 3,
+) -> list[dict]:
+    """
+    place_name 컬럼 기준으로 chunks를 장소별 그룹핑.
+    비광고 우선 → 관련성 검증(is_review_relevant_to_place) →
+    리뷰 개수·다양성 기준 랭킹까지 코드가 확정한다.
+    """
+    place_groups: dict[str, list[dict]] = {}
+
+    for i, chunk in enumerate(chunks):
+        raw_names = (chunk.get("place_name") or "").strip()
+        text = (chunk.get("text") or "").strip()
+        if not raw_names or not text:
+            continue
+        for name in raw_names.split(","):
+            name = name.strip()
+            if not name:
+                continue
+            place_groups.setdefault(name, []).append({**chunk, "_ref_id": i + 1})
+
+    candidates = []
+    for name, group_chunks in place_groups.items():
+        non_ad = [c for c in group_chunks if not c.get("is_ad")]
+        ad = [c for c in group_chunks if c.get("is_ad")]
+        ordered = non_ad + ad
+
+        relevant = [
+            c for c in ordered
+            if is_review_relevant_to_place(c.get("text") or "", name)
+        ]
+        if not relevant:
+            continue
+
+        article_ids = {c.get("article_id") for c in relevant if c.get("article_id") is not None}
+        scores = [s for c in relevant if (s := parse_template_score(c.get("text") or "")) is not None]
+
+        candidates.append({
+            "name": name,
+            "review_count": len(relevant),
+            "diverse": len(article_ids) >= 2,
+            "avg_template_score": (sum(scores) / len(scores)) if scores else None,
+            "chunk_ref_ids": [c["_ref_id"] for c in relevant[:reviews_per_place]],
+        })
+
+    candidates.sort(key=lambda c: (c["review_count"], c["diverse"]), reverse=True)
+    return candidates[:max_places]
+
+
 def is_relaxed_review_text(text: str) -> bool:
     t = (text or "").strip()
     if len(t) < 8:
@@ -1644,6 +1704,9 @@ async def search(req: SearchRequest):
         f"{clean_qna_text(c.get('text') or '') if c.get('content_type') == 'qna' else (c.get('text') or '')}"
         for i, c in enumerate(chunks)
     ])
+
+    place_candidates = build_place_candidates(chunks)
+    print(f"[코드후보] {json.dumps(place_candidates, ensure_ascii=False, default=str)}", flush=True, file=sys.stderr)
 
     system_prompt = build_system_prompt(req.query)
 
