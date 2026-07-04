@@ -21,7 +21,8 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
-PLACE_PHOTOS_ENABLED = False
+PLACE_PHOTOS_ENABLED = True
+PLACES_API_ENABLED = True
 
 CITY_ALIASES = {
     "마쓰야마": ["마쓰야마", "마츠야마", "松山", "도고온천", "시코쿠"],
@@ -1266,7 +1267,7 @@ class SearchRequest(BaseModel):
     category: str = None
     travel_style: str = None
     match_threshold: float = 0.65
-    match_count: int = 50
+    match_count: int = 25
 
 
 async def get_place_details(place_name: str, city: str = None) -> dict:
@@ -1288,6 +1289,9 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
                 "lng": row["lng"],
                 "photo_urls": (row.get("photo_urls") or []) if PLACE_PHOTOS_ENABLED else [],
             }
+
+    if not PLACES_API_ENABLED:
+        return None
 
     query = f"{place_name} {city}" if city else place_name
     field_mask = "places.displayName,places.location"
