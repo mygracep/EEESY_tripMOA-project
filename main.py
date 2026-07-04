@@ -1719,7 +1719,7 @@ async def search(req: SearchRequest):
         model="gemini-2.5-flash",
         contents=f"{system_prompt}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
         config={
-            "thinking_config": {"thinking_budget": 0},
+            "thinking_config": {"thinking_budget": 512},
             "response_mime_type": "application/json",
         }
     )
