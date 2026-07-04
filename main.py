@@ -981,6 +981,9 @@ DURATION_RE = re.compile(r"\d+\s*박\s*\d+\s*일|\d+박\d+일|\d+일\s*여행")
 SINGLE_CATEGORY_ASK_RE = re.compile(
     r"(숙소|호텔|료칸|숙박|맛집|식당|카페|관광지)[^.?!\n]{0,30}추천"
 )
+DETAIL_QUESTION_RE = re.compile(
+    r"(영업시간|휴무|예약|가격|얼마|몇\s*시|몇\s*분|주차|현금|카드|가능한가요|되나요|드나요)"
+)
 
 ITINERARY_MODE_BLOCK = """
 [⚠️ 이번 질문은 일정형입니다 — 아래만 최우선 적용]
@@ -1030,6 +1033,15 @@ def is_itinerary_query(query: str) -> bool:
     if SINGLE_CATEGORY_ASK_RE.search(q):
         return False
     return bool(DURATION_RE.search(q))
+
+
+def is_detail_query(query: str) -> bool:
+    q = query or ""
+    if is_itinerary_query(q):
+        return False
+    if SINGLE_CATEGORY_ASK_RE.search(q):
+        return False
+    return bool(DETAIL_QUESTION_RE.search(q)) and bool(QUESTION_RE.search(q))
 
 
 def build_system_prompt(query: str) -> str:
@@ -1273,14 +1285,19 @@ class SearchRequest(BaseModel):
 async def get_place_details(place_name: str, city: str = None) -> dict:
     cache_key = f"{place_name}|{city or ''}"
 
-    cached = await asyncio.to_thread(
-        lambda: supabase.table("place_cache")
-        .select("lat, lng, photo_urls, photos_checked")
-        .eq("place_key", cache_key)
-        .limit(1)
-        .execute()
-    )
-    if cached.data:
+    try:
+        cached = await asyncio.to_thread(
+            lambda: supabase.table("place_cache")
+            .select("lat, lng, photo_urls, photos_checked")
+            .eq("place_key", cache_key)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        print(f"place_cache 조회 실패: {e}", flush=True, file=sys.stderr)
+        cached = None
+
+    if cached and cached.data:
         row = cached.data[0]
         already_checked = row.get("photos_checked", False)
         if not PLACE_PHOTOS_ENABLED or already_checked:
@@ -1769,7 +1786,13 @@ async def search(req: SearchRequest):
     )
 
     # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
-    place_names = collect_place_names_for_api(result, limit=3, itinerary=itinerary_query)
+    detail_query = is_detail_query(req.query)
+
+    place_names = (
+        []
+        if detail_query
+        else collect_place_names_for_api(result, limit=3, itinerary=itinerary_query)
+    )
 
     places = []
     if place_names:
