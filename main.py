@@ -21,8 +21,8 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
-PLACE_PHOTOS_ENABLED = True
-PLACES_API_ENABLED = True
+PLACE_PHOTOS_ENABLED = False
+PLACES_API_ENABLED = False
 
 CITY_ALIASES = {
     "마쓰야마": ["마쓰야마", "마츠야마", "松山", "도고온천", "시코쿠"],
@@ -1719,7 +1719,7 @@ async def search(req: SearchRequest):
         model="gemini-2.5-flash",
         contents=f"{system_prompt}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
         config={
-            "thinking_config": {"thinking_budget": 512},
+            "thinking_config": {"thinking_budget": 0},
             "response_mime_type": "application/json",
         }
     )
