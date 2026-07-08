@@ -2038,11 +2038,14 @@ async def search(req: SearchRequest):
             "sources": []
         }
 
-    print(
-        f"[LLM 응답] sections={len(result.get('sections', []))}, "
-        f"places_detail={sum(len(s.get('places_detail', [])) for s in result.get('sections', []))}",
-        flush=True, file=sys.stderr,
-    )
+    print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
+    for section in result.get("sections", []):
+        pd_names = [pd.get("name") for pd in section.get("places_detail", [])]
+        content_places = re.findall(r"\*\*(.+?)\*\*", section.get("content", ""))
+        print(
+            f"[{section.get('title')}] content장소={content_places} | places_detail={pd_names}",
+            flush=True, file=sys.stderr,
+        )
 
     for section in result.get("sections", []):
         content = section.get("content")
