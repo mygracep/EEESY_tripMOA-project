@@ -1368,28 +1368,33 @@ def collect_place_names_for_api(
             pick(n)
         return picked
 
+    section_primaries: list[str] = []
+    rest_pool: list[str] = []
     seen: set[str] = set()
-    names: list[str] = []
-
-    def add(name: str) -> None:
-        n = (name or "").strip()
-        if not n or n in seen:
-            return
-        seen.add(n)
-        names.append(n)
 
     for section in result.get("sections", []):
         if re.search(r"여행\s*팁", section.get("title", ""), re.I):
             continue
-        for pd in section.get("places_detail", []):
-            add(pd.get("name") or "")
-        for m in re.findall(r"\*\*(.+?)\*\*", section.get("content", "")):
-            add(m)
+        names = _section_place_names(section)
+        if not names:
+            continue
+        primary = min(names, key=_place_photo_priority)
+        if primary not in seen:
+            seen.add(primary)
+            section_primaries.append(primary)
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                rest_pool.append(n)
 
-    if len(names) > limit:
-        names.sort(key=_place_photo_priority)
+    effective_limit = max(limit, len(section_primaries))
+    picked: list[str] = list(section_primaries)
+    for n in sorted(rest_pool, key=_place_photo_priority):
+        if len(picked) >= effective_limit:
+            break
+        picked.append(n)
 
-    return names[:limit]
+    return picked[:effective_limit]
 
 
 def extract_map_title(query: str, city: str = None) -> str:
