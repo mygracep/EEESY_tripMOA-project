@@ -1057,6 +1057,7 @@ def rank_and_trim_places_detail(
 
 ITINERARY_KEYWORDS_RE = re.compile(r"일정|코스|동선|루트|여행\s*계획|당일치기|하루\s*코스")
 DURATION_RE = re.compile(r"\d+\s*박\s*\d+\s*일|\d+박\d+일|\d+일\s*여행")
+TRIP_DURATION_RE = re.compile(r"(\d+)\s*박\s*(\d+)\s*일")
 SINGLE_CATEGORY_ASK_RE = re.compile(
     r"(숙소|호텔|료칸|숙박|맛집|식당|카페|관광지)[^.?!\n]{0,30}추천"
 )
@@ -1171,6 +1172,12 @@ def is_itinerary_query(query: str) -> bool:
     return bool(DURATION_RE.search(q))
 
 
+def extract_trip_day_count(query: str) -> int | None:
+    """'2박3일' → 3, '3박4일' → 4. 못 찾으면 None."""
+    m = TRIP_DURATION_RE.search(query or "")
+    return int(m.group(2)) if m else None
+
+
 def is_detail_query(query: str) -> bool:
     q = query or ""
     if is_itinerary_query(q):
@@ -1182,7 +1189,16 @@ def is_detail_query(query: str) -> bool:
 
 def build_system_prompt(query: str) -> str:
     if is_itinerary_query(query):
-        return f"{SYSTEM_PROMPT}\n\n{ITINERARY_MODE_BLOCK}"
+        block = ITINERARY_MODE_BLOCK
+        day_count = extract_trip_day_count(query)
+        if day_count:
+            block += (
+                f"\n\n[⚠️ 필수] 이 여행은 총 {day_count}일 일정입니다. "
+                f"반드시 DAY1부터 DAY{day_count}까지 {day_count}개의 Day 섹션을 빠짐없이 만드세요. "
+                f"참고 후기가 일부 Day에 부족하더라도 생략하지 말고, "
+                f"있는 데이터로라도 채워서 반드시 {day_count}개를 유지하세요."
+            )
+        return f"{SYSTEM_PROMPT}\n\n{block}"
     return SYSTEM_PROMPT
 
 
@@ -1946,7 +1962,8 @@ async def search(req: SearchRequest):
                     "photo_urls": details["photo_urls"],
                     "description": ""
                 })
-
+    
+    print(f"[사진] place_names={place_names}, 확보된 places={len(places)}개", flush=True, file=sys.stderr)
     result["places"] = places if places else None
 
     all_cited_refs = collect_cited_ref_ids(result)
