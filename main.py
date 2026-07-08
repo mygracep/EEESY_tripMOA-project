@@ -21,7 +21,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
-PLACE_PHOTOS_ENABLED = True
+PLACE_PHOTOS_ENABLED = Flase
 PLACES_API_ENABLED = True
 
 CITY_ALIASES = {
