@@ -1448,6 +1448,84 @@ class SearchRequest(BaseModel):
     match_count: int = 25
 
 
+def _places_search_queries(place_name: str, city: str | None) -> list[str]:
+    """Google Places textQuery 후보 — 한국어·일본어 도시명·장소명만 순서대로 시도."""
+    queries: list[str] = []
+    name = (place_name or "").strip()
+    if not name:
+        return queries
+
+    if city:
+        queries.append(f"{name} {city}")
+        for alias in CITY_ALIASES.get(city, []):
+            if alias != city:
+                queries.append(f"{name} {alias}")
+    queries.append(name)
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for q in queries:
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            deduped.append(q)
+    return deduped
+
+
+async def _google_places_text_search(client: httpx.AsyncClient, text_query: str) -> dict | None:
+    field_mask = "places.displayName,places.location"
+    if PLACE_PHOTOS_ENABLED:
+        field_mask += ",places.photos"
+
+    try:
+        search_res = await client.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask": field_mask,
+            },
+            json={
+                "textQuery": text_query,
+                "languageCode": "ja",
+                "regionCode": "JP",
+            },
+        )
+        if search_res.status_code != 200:
+            print(
+                f"[Places API] HTTP {search_res.status_code} query={text_query!r} "
+                f"body={search_res.text[:200]}",
+                flush=True,
+                file=sys.stderr,
+            )
+            return None
+
+        data = search_res.json()
+        if data.get("error"):
+            print(
+                f"[Places API] error query={text_query!r}: {data['error']}",
+                flush=True,
+                file=sys.stderr,
+            )
+            return None
+        places = data.get("places") or []
+        if not places:
+            print(
+                f"[Places API] '{text_query}' 검색 결과 없음",
+                flush=True,
+                file=sys.stderr,
+            )
+            return None
+        return places[0]
+    except Exception as e:
+        print(
+            f"[Places API] '{text_query}' 호출 실패: {e}",
+            flush=True,
+            file=sys.stderr,
+        )
+        return None
+
+
 async def get_place_details(place_name: str, city: str = None) -> dict:
     cache_key = f"{place_name}|{city or ''}"
 
@@ -1465,40 +1543,39 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
 
     if cached and cached.data:
         row = cached.data[0]
+        cached_photos = row.get("photo_urls") or []
         already_checked = row.get("photos_checked", False)
-        if not PLACE_PHOTOS_ENABLED or already_checked:
+        has_coords = row.get("lat") is not None and row.get("lng") is not None
+        if not PLACE_PHOTOS_ENABLED and has_coords:
+            return {"lat": row["lat"], "lng": row["lng"], "photo_urls": []}
+        if already_checked and has_coords and (cached_photos or not PLACE_PHOTOS_ENABLED):
             return {
                 "lat": row["lat"],
                 "lng": row["lng"],
-                "photo_urls": (row.get("photo_urls") or []) if PLACE_PHOTOS_ENABLED else [],
+                "photo_urls": cached_photos if PLACE_PHOTOS_ENABLED else [],
             }
 
     if not PLACES_API_ENABLED:
+        print(f"[Places] API 비활성 → {place_name!r} skip", flush=True, file=sys.stderr)
         return None
 
-    query = f"{place_name} {city}" if city else place_name
-    field_mask = "places.displayName,places.location"
-    if PLACE_PHOTOS_ENABLED:
-        field_mask += ",places.photos"
+    try:
+        place = None
+        matched_query = None
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for text_query in _places_search_queries(place_name, city):
+                place = await _google_places_text_search(client, text_query)
+                if place:
+                    matched_query = text_query
+                    break
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        search_res = await client.post(
-            "https://places.googleapis.com/v1/places:searchText",
-            headers={
-                "Content-Type": "application/json",
-                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-                "X-Goog-FieldMask": field_mask,
-            },
-            json={"textQuery": query, "languageCode": "ko"}
-        )
-        data = search_res.json()
-
-        if not data.get("places"):
+        if not place:
+            print(f"[Places] 미매칭 place={place_name!r} city={city!r}", flush=True, file=sys.stderr)
             return None
 
-        place = data["places"][0]
         lat = place["location"]["latitude"]
         lng = place["location"]["longitude"]
+        display = (place.get("displayName") or {}).get("text", "")
 
         photo_urls = []
         if PLACE_PHOTOS_ENABLED and place.get("photos"):
@@ -1507,7 +1584,21 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
                     f"{BACKEND_BASE_URL}/photo/{photo['name']}?maxWidthPx=800"
                 )
 
-    result = {"lat": lat, "lng": lng, "photo_urls": photo_urls}
+        print(
+            f"[Places] 매칭 place={place_name!r} query={matched_query!r} "
+            f"display={display!r} photos={len(photo_urls)}",
+            flush=True,
+            file=sys.stderr,
+        )
+
+        result = {"lat": lat, "lng": lng, "photo_urls": photo_urls}
+    except Exception as e:
+        print(
+            f"[Places API] '{place_name}' 호출 실패: {e}",
+            flush=True,
+            file=sys.stderr,
+        )
+        return None
 
     try:
         await asyncio.to_thread(
@@ -1964,7 +2055,12 @@ async def search(req: SearchRequest):
                     "description": ""
                 })
     
-    print(f"[사진] place_names={place_names}, 확보된 places={len(places)}개", flush=True, file=sys.stderr)
+    print(
+        f"[사진] place_names={place_names}, 확보된 places={len(places)}개, "
+        f"사진있음={sum(1 for p in places if p.get('photo_urls'))}개",
+        flush=True,
+        file=sys.stderr,
+    )
     result["places"] = places if places else None
 
     all_cited_refs = collect_cited_ref_ids(result)
