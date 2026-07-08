@@ -23,6 +23,7 @@ GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
 PLACE_PHOTOS_ENABLED = True
 PLACES_API_ENABLED = True
+FETCH_PLACE_REVIEWS_ENABLED = False  # 임시 — 새 RPC로도 충분한지 테스트
 
 CITY_ALIASES = {
     "마쓰야마": ["마쓰야마", "마츠야마", "松山", "도고온천", "시코쿠"],
@@ -1420,6 +1421,37 @@ def collect_place_names_for_api(
     return picked[:effective_limit]
 
 
+def select_itinerary_photo_places(result: dict, max_places: int = 3) -> list[str]:
+    """Day 순서대로, 최대 max_places(=3)개 Day에서 대표 장소 1곳씩 선정.
+    Day 개수가 3보다 많으면 뒤쪽 Day는 사진 없이 넘어감(고정 3곳 정책)."""
+    picked: list[str] = []
+    seen: set[str] = set()
+
+    day_sections = [
+        s for s in result.get("sections", [])
+        if _is_day_section_title(s.get("title") or "")
+    ]
+
+    for section in day_sections:
+        if len(picked) >= max_places:
+            break
+
+        places_detail = section.get("places_detail", [])
+        candidates = [pd for pd in places_detail if len(pd.get("reviews", [])) >= 2]
+        if not candidates:
+            candidates = places_detail
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda pd: _place_photo_priority(pd.get("name", "")))
+        chosen = candidates[0]["name"]
+        if chosen not in seen:
+            seen.add(chosen)
+            picked.append(chosen)
+
+    return picked
+
+
 def extract_map_title(query: str, city: str = None) -> str:
     keywords = ["2박3일", "3박4일", "4박5일", "1박2일", "일정", "숙소", "맛집", "코스"]
 
@@ -1890,9 +1922,9 @@ async def search(req: SearchRequest):
             for p in c["place_name"].split(","):
                 place_names_in_chunks.add(p.strip())
 
-    place_names_in_chunks = list(place_names_in_chunks)[:8]
+    place_names_in_chunks = list(place_names_in_chunks)[:15]
 
-    if place_names_in_chunks:
+    if FETCH_PLACE_REVIEWS_ENABLED and place_names_in_chunks:
         extra_tasks = [
             fetch_place_reviews(p, req.city, prioritize_non_ad)
             for p in place_names_in_chunks
@@ -2033,11 +2065,14 @@ async def search(req: SearchRequest):
         if places_detail_count else 0
     )
 
-    # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
+    # 6. content·places_detail 장소명 → Places API (일정형: Day당 1곳, 최대 3곳)
     place_names = (
         []
         if detail_query
-        else collect_place_names_for_api(result, limit=3, itinerary=itinerary_query)
+        else (
+            select_itinerary_photo_places(result, max_places=3) if itinerary_query
+            else collect_place_names_for_api(result, limit=3, itinerary=False)
+        )
     )
 
     places = []
