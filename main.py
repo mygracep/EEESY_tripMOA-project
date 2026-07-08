@@ -979,25 +979,29 @@ def postprocess_place_detail(
         r["ref"] = ref_id
         llm_reviews.append(r)
 
-    if len(llm_reviews) >= 2:
+    place_name = pd.get("name") or ""
+    min_reviews = 1 if _is_attraction_name(place_name) else 2
+
+    if len(llm_reviews) >= min_reviews:
         pd["reviews"] = llm_reviews[:3]
     else:
         pd["reviews"] = pick_place_reviews(
             llm_reviews,
-            place_name=pd.get("name") or "",
+            min_count=min_reviews,
+            place_name=place_name,
             description=pd.get("description") or "",
             exclude_ad=prioritize_non_ad,
         )
-        if chunks and len(pd["reviews"]) < 2:
-            backfill_reviews_from_chunks(pd, chunks, min_count=2, max_count=3)
+        if chunks and len(pd["reviews"]) < min_reviews:
+            backfill_reviews_from_chunks(pd, chunks, min_count=min_reviews, max_count=3)
 
     for r in pd["reviews"]:
-        r["text"] = trim_review_to_place_sentences(
+        trimmed = trim_review_to_place_sentences(
             r["text"], pd.get("name", ""), pd.get("description", "")
         )
+        r["text"] = trimmed if trimmed else r["text"]
     pd["reviews"] = [r for r in pd["reviews"] if (r.get("text") or "").strip()]
     raw_warnings = pd.get("warnings") or []
-    place_name = pd.get("name") or ""
     description = pd.get("description") or ""
     sanitized = [
         sanitize_warning_text(NUMBERED_LINE_RE.sub("", w).strip())
@@ -1255,6 +1259,17 @@ def _is_day_section_title(title: str) -> bool:
     t = (title or "").strip()
     stripped = DAY_TITLE_EMOJI_RE.sub("", t)
     return bool(DAY_SECTION_TITLE_RE.match(stripped) or DAY_TITLE_PREFIX_RE.match(stripped))
+
+
+ATTRACTION_NAME_RE = re.compile(
+    r"관광|신사|사찰|USJ|스튜디오|박물관|공원|타워|성|전망|이나리|유니버설|폭포|해변|계곡|온천|"
+    r"마츠바라|동물원|정원|신궁|다리|대교|저택|온센",
+    re.I,
+)
+
+
+def _is_attraction_name(name: str) -> bool:
+    return bool(ATTRACTION_NAME_RE.search(name or ""))
 
 
 def _place_photo_priority(name: str) -> int:
