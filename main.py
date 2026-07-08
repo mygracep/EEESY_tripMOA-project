@@ -168,6 +168,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
   ✔ 첫 혼여/편하게 → **호텔명**
   ✔ 가성비+잠만 → **호텔명**
   👉 한 줄 결론: 혼여면 역세권 비즈니스 호텔이 정답
+  - 상황별추천 content에는 [ref:N] 표기 금지 (출처는 places_detail·reviews에만)
 - 카테고리는 후기 데이터에 있는 내용 기준으로만. 없는 카테고리 만들지 말 것.
 
 [일정형 쿼리 처리 — 일정형일 때 최우선, 추천형 규칙 무시]
@@ -195,7 +196,7 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - 마지막 섹션: title "여행 팁" (이모지 없이), icon "💡", places_detail: []
 - 여행 팁 content 형식은 상황별추천과 동일:
   - 짧은 본문 줄 나열 (✔ 교통 / ✔ 렌터카 / ✔ 주의사항 등)
-  - 각 줄 끝 [ref:N] 필수 (후기 근거)
+  - 여행 팁 content에는 [ref:N] 표기 금지 (출처는 places_detail·reviews에만)
   - **장소명 블록·이모지+장소·사진 형식 사용 금지**
   - 👉 한 줄 결론 1줄 가능
 - content 불릿은 "이동해요 / 식사해요" 같은 행동 나열 금지.
@@ -564,10 +565,7 @@ def clean_review_text(text: str, max_len: int = 500) -> str:
 #    (같은 정렬 철학 공유, 조회 방식은 별도)
 #
 # 5) 일정형은 카테고리별 쿼터로 여러 번 RPC 호출 (build_retrieval_plan).
-#    ⚠️ 미해결: category가 소프트 필터라 쿼터 호출 결과에 다른 카테고리가
-#    섞여 나올 수 있음. 현재는 넉넉히 받아온 뒤 파이썬에서 category
-#    정확히 일치하는 것만 골라 쿼터를 채우는 방식으로 임시 처리함.
-#    데이터가 부족한 카테고리는 쿼터를 못 채울 수 있음 — 확인 필요.
+#    일정형 호출 시 hard_category=True로 category 하드 필터.
 # ============================================================
 
 EVALUATIVE_QUERY_RE = re.compile(
@@ -851,6 +849,7 @@ def infer_warnings_from_reviews(reviews: list) -> list[str]:
 
 
 MAX_REVIEW_CHUNK_HOPS = 3
+TITLE_HEADER_RE = re.compile(r"^제목\s*[:：]")
 
 KOREAN_SENTENCE_END_RE = re.compile(
     r"(?:요|다|니다|습니다|해요|돼요|있어요|없어요|네요|죠|래요|이에요|예요|구요|군요|게요|"
@@ -903,7 +902,10 @@ async def extend_truncated_review(text: str, chunk: dict) -> str:
         )
         if not next_text:
             break
-        out = out + next_text
+        # 다음 청크가 새 글의 제목으로 시작하면 별개 맥락 → 이어붙이지 않고 중단
+        if TITLE_HEADER_RE.match(next_text.strip()):
+            break
+        out = out + clean_review_text(next_text, max_len=1000)
 
     return out
 
@@ -1088,6 +1090,63 @@ TIME_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 INLINE_REF_RE = re.compile(r"\s*(?:\[ref:\d+\])+\s*")
+NO_REF_SECTION_TITLE_RE = re.compile(r"여행\s*팁|상황별")
+
+
+def is_no_ref_section(section: dict) -> bool:
+    title = (section.get("title") or "").strip()
+    return bool(NO_REF_SECTION_TITLE_RE.search(title))
+
+
+def strip_refs_from_tip_sections(payload: dict) -> None:
+    for section in payload.get("sections", []):
+        if not is_no_ref_section(section):
+            continue
+        content = section.get("content")
+        if content:
+            section["content"] = INLINE_REF_RE.sub(" ", str(content)).strip()
+
+
+def collect_cited_ref_ids(payload: dict) -> set[int]:
+    refs: set[int] = set()
+
+    def scan(text: str | None) -> None:
+        if not text:
+            return
+        for m in re.findall(r"\[ref:(\d+)\]", text):
+            refs.add(int(m))
+
+    scan(payload.get("summary"))
+    for section in payload.get("sections", []):
+        scan(section.get("content"))
+        table = section.get("table")
+        if table and isinstance(table.get("rows"), list):
+            for row in table["rows"]:
+                if isinstance(row, list):
+                    for cell in row:
+                        scan(cell)
+        for pd in section.get("places_detail", []):
+            scan(pd.get("description"))
+            for warning in pd.get("warnings", []):
+                scan(warning)
+            for review in pd.get("reviews", []):
+                scan(review.get("text"))
+                ref = review.get("ref")
+                if ref is not None:
+                    try:
+                        refs.add(int(ref))
+                    except (TypeError, ValueError):
+                        pass
+        for review in section.get("reviews", []):
+            ref = review.get("ref")
+            if ref is not None:
+                try:
+                    refs.add(int(ref))
+                except (TypeError, ValueError):
+                    pass
+    return refs
+
+
 PLACE_EMOJI_PREFIX = re.compile(
     r"^[\s]*(?:[\U0001F300-\U0001FAFF\U00002600-\U000027BF]|🗺️|🏨|🍜|⛩️|🚆|🛍️|💰|📍)"
 )
@@ -1611,6 +1670,7 @@ async def search(req: SearchRequest):
             except Exception as e:
                 print(f"search_logs 저장 실패(캐시 히트): {e}", flush=True, file=sys.stderr)
             cached_result = cache_res.data[0]["result"]
+            strip_refs_from_tip_sections(cached_result)
             await refresh_result_places(cached_result, req.city)
             return cached_result
     except Exception as e:
@@ -1631,29 +1691,21 @@ async def search(req: SearchRequest):
     chunks: list[dict] = []
 
     for call in plan:
-        # 일정형은 category가 소프트 필터라 쿼터 보장을 위해 넉넉히 받아서 파이썬에서 재필터링.
-        # ⚠️ 데이터가 부족한 카테고리는 쿼터를 못 채울 수 있음 — 확인 필요한 부분.
-        request_count = call["match_count"] * 3 if itinerary_query else call["match_count"]
         res = await asyncio.to_thread(
-            lambda call=call, request_count=request_count: supabase.rpc("match_travel_chunks", {
+            lambda call=call: supabase.rpc("match_travel_chunks", {
                 "query_embedding": query_vector,
                 "match_threshold": req.match_threshold,
-                "match_count": request_count,
+                "match_count": call["match_count"],
                 "filter_city": req.city,
                 "filter_category": call["filter_category"],
                 "filter_travel_style": req.travel_style,
                 "prioritize_non_ad": prioritize_non_ad,
+                "hard_category": itinerary_query,
             }).execute()
         )
         call_chunks = res.data or []
-
-        if itinerary_query and call["filter_category"]:
-            call_chunks = [
-                c for c in call_chunks if c.get("category") == call["filter_category"]
-            ][: call["match_count"]]
-
         print(
-            f"[검색] category={call['filter_category']!r} 요청={request_count} 확보={len(call_chunks)}",
+            f"[검색] category={call['filter_category']!r} 요청={call['match_count']} 확보={len(call_chunks)}",
             flush=True, file=sys.stderr,
         )
         chunks.extend(call_chunks)
@@ -1892,45 +1944,8 @@ async def search(req: SearchRequest):
 
     result["places"] = places if places else None
 
-    def collect_cited_ref_ids(payload: dict) -> set[int]:
-        refs: set[int] = set()
-
-        def scan(text: str | None) -> None:
-            if not text:
-                return
-            for m in re.findall(r"\[ref:(\d+)\]", text):
-                refs.add(int(m))
-
-        scan(payload.get("summary"))
-        for section in payload.get("sections", []):
-            scan(section.get("content"))
-            table = section.get("table")
-            if table and isinstance(table.get("rows"), list):
-                for row in table["rows"]:
-                    if isinstance(row, list):
-                        for cell in row:
-                            scan(cell)
-            for pd in section.get("places_detail", []):
-                scan(pd.get("description"))
-                for warning in pd.get("warnings", []):
-                    scan(warning)
-                for review in pd.get("reviews", []):
-                    scan(review.get("text"))
-                    ref = review.get("ref")
-                    if ref is not None:
-                        try:
-                            refs.add(int(ref))
-                        except (TypeError, ValueError):
-                            pass
-            # 구 스키마 호환
-            for review in section.get("reviews", []):
-                ref = review.get("ref")
-                if ref is not None:
-                    try:
-                        refs.add(int(ref))
-                    except (TypeError, ValueError):
-                        pass
-        return refs
+    all_cited_refs = collect_cited_ref_ids(result)
+    strip_refs_from_tip_sections(result)
 
     def chunk_to_source(ref_id: int, chunk: dict, title: str) -> dict:
         link = chunk.get("link", "")
@@ -1947,7 +1962,6 @@ async def search(req: SearchRequest):
         }
 
     # 7. 본문 [ref:N] ↔ sources 동기화 + 중복 제거 + 모바일 URL
-    cited_refs = collect_cited_ref_ids(result)
     sources_by_id: dict[int, dict] = {}
 
     for source in result.get("sources", []):
@@ -1957,7 +1971,7 @@ async def search(req: SearchRequest):
             continue
         sources_by_id[sid] = source
 
-    for ref_id in cited_refs:
+    for ref_id in all_cited_refs:
         if ref_id < 1 or ref_id > len(chunks):
             continue
         if ref_id in sources_by_id:
