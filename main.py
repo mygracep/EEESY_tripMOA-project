@@ -21,7 +21,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
-PLACE_PHOTOS_ENABLED = False
+PLACE_PHOTOS_ENABLED = True
 PLACES_API_ENABLED = True
 
 CITY_ALIASES = {
@@ -569,7 +569,7 @@ def clean_review_text(text: str, max_len: int = 500) -> str:
 # ============================================================
 
 EVALUATIVE_QUERY_RE = re.compile(
-    r"나은가요|나을까요|나아요|추천해|어디가\s*좋|뭐가\s*좋|비교|vs|어느\s*쪽|중\s*(?:어디|뭐)|둘\s*중",
+    r"나은가요|나을까요|나아요|어디가\s*좋|뭐가\s*좋|비교|vs|어느\s*쪽|중\s*(?:어디|뭐)|둘\s*중",
     re.I,
 )
 
