@@ -456,6 +456,7 @@ def build_place_candidates(
     place_name 컬럼 기준으로 chunks를 장소별 그룹핑.
     비광고 우선 → 관련성 검증(is_review_relevant_to_place) →
     리뷰 개수·다양성 기준 랭킹까지 코드가 확정한다.
+    (참고용 로그 목적으로만 사용 — 실제 파이프라인에는 연결하지 않음)
     """
     place_groups: dict[str, list[dict]] = {}
 
@@ -543,22 +544,90 @@ def clean_review_text(text: str, max_len: int = 500) -> str:
     return t
 
 
-async def fetch_place_reviews(
-    place_name: str, city: str | None, limit: int = 10
+# ============================================================
+# 정렬/필터링 설계 (오늘 확정분)
+#
+# 1) match_travel_chunks RPC: 유사도로 후보 100개 추린 뒤,
+#    is_ad(게이트) → place_name 집중도 → quality_score →
+#    category 일치 → travel_style 일치 → date 순으로 재정렬.
+#    city만 하드 필터, category/travel_style은 소프트 필터.
+#
+# 2) is_ad 게이트(prioritize_non_ad)는 "비교/평가형 질문"일 때만 True.
+#    카테고리 무관 — 실측 결과 카테고리별 광고비율 차이가 크지 않아
+#    카테고리 기반 게이트는 근거 부족으로 기각.
+#
+# 3) 생성 단계(pick_place_reviews 등)에도 같은 게이트 값을 전달해서
+#    retrieval에서 걸러도 LLM이 다시 광고를 골라 쓰는 걸 방지.
+#
+# 4) fetch_place_reviews()는 벡터검색이 아니라 장소명 텍스트 매칭이라
+#    match_travel_chunks와 별도로 match_place_reviews RPC를 새로 만듦.
+#    (같은 정렬 철학 공유, 조회 방식은 별도)
+#
+# 5) 일정형은 카테고리별 쿼터로 여러 번 RPC 호출 (build_retrieval_plan).
+#    ⚠️ 미해결: category가 소프트 필터라 쿼터 호출 결과에 다른 카테고리가
+#    섞여 나올 수 있음. 현재는 넉넉히 받아온 뒤 파이썬에서 category
+#    정확히 일치하는 것만 골라 쿼터를 채우는 방식으로 임시 처리함.
+#    데이터가 부족한 카테고리는 쿼터를 못 채울 수 있음 — 확인 필요.
+# ============================================================
+
+EVALUATIVE_QUERY_RE = re.compile(
+    r"나은가요|나을까요|나아요|추천해|어디가\s*좋|뭐가\s*좋|비교|vs|어느\s*쪽|중\s*(?:어디|뭐)|둘\s*중",
+    re.I,
+)
+
+
+def should_prioritize_non_ad(query: str) -> bool:
+    """비교/평가형 질문일 때만 광고 배제를 최우선으로 둔다. 카테고리 무관(실측 근거)."""
+    return bool(EVALUATIVE_QUERY_RE.search(query or ""))
+
+
+ITINERARY_QUOTAS = {
+    "음식/맛집": 8,
+    "관광/체험": 8,
+    "숙소": 5,
+    "교통/이동": 4,
+}
+
+
+def build_retrieval_plan(
+    req: "SearchRequest", itinerary_query: bool, detail_query: bool
 ) -> list[dict]:
+    """match_travel_chunks RPC를 몇 번, 어떤 category·count로 부를지 결정.
+    (정렬 기준 자체는 RPC 안에서 항상 고정 — 여기는 '구성'만 결정)
+    """
+    if itinerary_query:
+        return [
+            {"filter_category": cat, "match_count": count}
+            for cat, count in ITINERARY_QUOTAS.items()
+        ]
+
+    if detail_query:
+        return [{"filter_category": req.category, "match_count": 5}]
+
+    # 추천형(기본): 단일 카테고리, 넉넉히
+    return [{"filter_category": req.category, "match_count": req.match_count}]
+
+
+async def fetch_place_reviews(
+    place_name: str,
+    city: str | None,
+    prioritize_non_ad: bool,
+    limit: int = 3,
+) -> list[dict]:
+    """장소명 텍스트 매칭 기반 보강 조회. match_place_reviews RPC 사용
+    (is_ad 게이트 → 집중도 → quality_score → date 순 정렬은 RPC 안에서 처리)."""
     terms = extract_place_match_terms(place_name)
     if not terms:
         return []
     core_term = max(terms, key=len)
-    query = (
-        supabase.table("travel_chunks")
-        .select("article_id, chunk_index, text, link, date, is_ad, title, place_name")
-        .ilike("place_name", f"%{core_term}%")
+    res = await asyncio.to_thread(
+        lambda: supabase.rpc("match_place_reviews", {
+            "search_term": core_term,
+            "filter_city": city,
+            "prioritize_non_ad": prioritize_non_ad,
+            "match_count": limit,
+        }).execute()
     )
-    if city:
-        query = query.eq("city", city)
-    query = query.order("is_ad").limit(limit)
-    res = await asyncio.to_thread(query.execute)
     return res.data or []
 
 
@@ -568,6 +637,7 @@ def pick_place_reviews(
     max_count: int = 3,
     place_name: str = "",
     description: str = "",
+    exclude_ad: bool = False,
 ) -> list:
     strict: list = []
     relaxed_pool: list = []
@@ -582,6 +652,8 @@ def pick_place_reviews(
 
     for r in reviews or []:
         if not isinstance(r, dict):
+            continue
+        if exclude_ad and r.get("is_ad"):
             continue
         text = (r.get("text") or "").strip()
         if not text or not is_relevant(r):
@@ -883,7 +955,9 @@ def validate_warning_ref(
     return is_review_relevant_to_place(chunk_text, place_name, description)
 
 
-def postprocess_place_detail(pd: dict, chunks: list | None = None) -> None:
+def postprocess_place_detail(
+    pd: dict, chunks: list | None = None, prioritize_non_ad: bool = False
+) -> None:
     raw_reviews = pd.get("reviews", []) or []
     for r in raw_reviews:
         if isinstance(r, dict):
@@ -892,6 +966,7 @@ def postprocess_place_detail(pd: dict, chunks: list | None = None) -> None:
         [r for r in raw_reviews if isinstance(r, dict) and (r.get("text") or "").strip()],
         place_name=pd.get("name") or "",
         description=pd.get("description") or "",
+        exclude_ad=prioritize_non_ad,
     )
     validated: list = []
     for r in reviews:
@@ -930,10 +1005,12 @@ def postprocess_place_detail(pd: dict, chunks: list | None = None) -> None:
             pd["warnings"] = inferred
 
 
-def enrich_place_warnings(result: dict, chunks: list | None = None) -> None:
+def enrich_place_warnings(
+    result: dict, chunks: list | None = None, prioritize_non_ad: bool = False
+) -> None:
     for section in result.get("sections", []):
         for pd in section.get("places_detail", []):
-            postprocess_place_detail(pd, chunks)
+            postprocess_place_detail(pd, chunks, prioritize_non_ad)
 
 
 def _place_detail_rank(pd: dict, chunks: list | None) -> tuple[int, int]:
@@ -1133,7 +1210,9 @@ def _section_place_names(section: dict) -> list[str]:
     return names
 
 
-def normalize_itinerary_response(result: dict, chunks: list | None = None) -> None:
+def normalize_itinerary_response(
+    result: dict, chunks: list | None = None, prioritize_non_ad: bool = False
+) -> None:
     for section in result.get("sections", []):
         title = (section.get("title") or "").strip()
         if re.search(r"여행\s*팁", title, re.IGNORECASE):
@@ -1160,7 +1239,7 @@ def normalize_itinerary_response(result: dict, chunks: list | None = None) -> No
             section["content"] = "\n".join(line for line in cleaned if line.strip())
 
         for pd in section.get("places_detail", []):
-            postprocess_place_detail(pd, chunks)
+            postprocess_place_detail(pd, chunks, prioritize_non_ad)
 
 
 def collect_place_names_for_api(
@@ -1538,45 +1617,49 @@ async def search(req: SearchRequest):
         print(f"answer_cache 조회 실패: {e}", flush=True, file=sys.stderr)
 
     itinerary_query = is_itinerary_query(req.query)
+    detail_query = is_detail_query(req.query)
+    prioritize_non_ad = should_prioritize_non_ad(req.query)
     match_count = req.match_count
     print(f"[요청확인] city={req.city!r}, category={req.category!r}, travel_style={req.travel_style!r}, match_threshold={req.match_threshold}", flush=True, file=sys.stderr)
     print(f"[인코딩] city={req.city!r}, utf8_bytes={len(req.city.encode('utf-8')) if req.city else 0}", flush=True, file=sys.stderr)
+    print(f"[게이트] itinerary={itinerary_query}, detail={detail_query}, prioritize_non_ad={prioritize_non_ad}", flush=True, file=sys.stderr)
 
-    # 2. 벡터 검색 (non-ad 우선, 부족 시 ad 보완)
-    res = await asyncio.to_thread(
-        lambda: supabase.rpc("match_travel_chunks", {
-            "query_embedding": query_vector,
-            "match_threshold": req.match_threshold,
-            "match_count": match_count,
-            "filter_city": req.city,
-            "filter_category": req.category,
-            "filter_travel_style": req.travel_style,
-            "filter_is_ad": False,
-        }).execute()
-    )
-    print(f"[RPC원본] status: {getattr(res, 'status_code', 'N/A')}, data 개수: {len(res.data or [])}, data 샘플: {res.data[:2] if res.data else 'EMPTY'}", flush=True, file=sys.stderr)
-    non_ad_chunks = res.data or []
-    non_ad_count = len(non_ad_chunks)
-    print(f"[검색1] non_ad: {len(non_ad_chunks)}개", flush=True, file=sys.stderr)
+    # 2. 벡터 검색 — build_retrieval_plan()에 따라 RPC를 1번 또는 카테고리별 여러 번 호출.
+    #    정렬(is_ad 게이트 → 집중도 → quality_score → category → style → date)은
+    #    RPC 내부에서 항상 고정으로 처리됨.
+    plan = build_retrieval_plan(req, itinerary_query, detail_query)
+    chunks: list[dict] = []
 
-    chunks = non_ad_chunks
-
-    if len(non_ad_chunks) < match_count:
-        need = match_count - len(non_ad_chunks)
-        res_ad = await asyncio.to_thread(
-            lambda: supabase.rpc("match_travel_chunks", {
+    for call in plan:
+        # 일정형은 category가 소프트 필터라 쿼터 보장을 위해 넉넉히 받아서 파이썬에서 재필터링.
+        # ⚠️ 데이터가 부족한 카테고리는 쿼터를 못 채울 수 있음 — 확인 필요한 부분.
+        request_count = call["match_count"] * 3 if itinerary_query else call["match_count"]
+        res = await asyncio.to_thread(
+            lambda call=call, request_count=request_count: supabase.rpc("match_travel_chunks", {
                 "query_embedding": query_vector,
                 "match_threshold": req.match_threshold,
-                "match_count": need,
+                "match_count": request_count,
                 "filter_city": req.city,
-                "filter_category": req.category,
+                "filter_category": call["filter_category"],
                 "filter_travel_style": req.travel_style,
-                "filter_is_ad": True,
+                "prioritize_non_ad": prioritize_non_ad,
             }).execute()
         )
-        chunks = non_ad_chunks + (res_ad.data or [])
-        ad_count = len(res_ad.data or [])
-        print(f"[검색2] ad 보충 후: {len(chunks)}개", flush=True, file=sys.stderr)
+        call_chunks = res.data or []
+
+        if itinerary_query and call["filter_category"]:
+            call_chunks = [
+                c for c in call_chunks if c.get("category") == call["filter_category"]
+            ][: call["match_count"]]
+
+        print(
+            f"[검색] category={call['filter_category']!r} 요청={request_count} 확보={len(call_chunks)}",
+            flush=True, file=sys.stderr,
+        )
+        chunks.extend(call_chunks)
+
+    non_ad_count = sum(1 for c in chunks if not c.get("is_ad"))
+    ad_count = len(chunks) - non_ad_count
 
     chunks_before_qna = len(chunks)
     chunks = [c for c in chunks if is_city_relevant(c, req.city)]
@@ -1593,7 +1676,7 @@ async def search(req: SearchRequest):
                 "filter_city": req.city,
                 "filter_category": req.category,
                 "filter_travel_style": req.travel_style,
-                "filter_is_ad": None,
+                "prioritize_non_ad": prioritize_non_ad,
             }).execute()
         )
         for c in (res_debug.data or [])[:10]:
@@ -1609,7 +1692,7 @@ async def search(req: SearchRequest):
                 "filter_city": req.city,
                 "filter_category": req.category,
                 "filter_travel_style": req.travel_style,
-                "filter_is_ad": None,
+                "prioritize_non_ad": prioritize_non_ad,
             }).execute()
         )
         fallback_chunks = [
@@ -1634,7 +1717,7 @@ async def search(req: SearchRequest):
 
     if place_names_in_chunks:
         extra_tasks = [
-            fetch_place_reviews(p, req.city)
+            fetch_place_reviews(p, req.city, prioritize_non_ad)
             for p in place_names_in_chunks
         ]
         try:
@@ -1770,8 +1853,8 @@ async def search(req: SearchRequest):
             section["content"] = split_inline_place_blocks(content)
 
     if itinerary_query:
-        normalize_itinerary_response(result, chunks)
-    enrich_place_warnings(result, chunks)
+        normalize_itinerary_response(result, chunks, prioritize_non_ad)
+    enrich_place_warnings(result, chunks, prioritize_non_ad)
     await extend_result_reviews(result, chunks)
     rank_and_trim_places_detail(result, chunks, max_per_section=3)
 
@@ -1786,8 +1869,6 @@ async def search(req: SearchRequest):
     )
 
     # 6. content·places_detail 장소명 → Places API (일정형: Day 수만큼 최소 확보)
-    detail_query = is_detail_query(req.query)
-
     place_names = (
         []
         if detail_query
