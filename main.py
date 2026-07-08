@@ -962,27 +962,33 @@ def postprocess_place_detail(
     pd: dict, chunks: list | None = None, prioritize_non_ad: bool = False
 ) -> None:
     raw_reviews = pd.get("reviews", []) or []
+    llm_reviews = []
     for r in raw_reviews:
-        if isinstance(r, dict):
-            r["text"] = clean_review_text(r.get("text", ""))
-    reviews = pick_place_reviews(
-        [r for r in raw_reviews if isinstance(r, dict) and (r.get("text") or "").strip()],
-        place_name=pd.get("name") or "",
-        description=pd.get("description") or "",
-        exclude_ad=prioritize_non_ad,
-    )
-    validated: list = []
-    for r in reviews:
         if not isinstance(r, dict):
+            continue
+        text = clean_review_text(r.get("text", ""), max_len=1000)
+        if not text:
+            continue
+        if prioritize_non_ad and r.get("is_ad"):
             continue
         ref_id = _review_ref_id(r)
         if ref_id is None:
             continue
+        r["text"] = text
         r["ref"] = ref_id
-        validated.append(r)
-    pd["reviews"] = validated
-    if chunks and len(pd["reviews"]) < 2:
-        backfill_reviews_from_chunks(pd, chunks, min_count=2, max_count=3)
+        llm_reviews.append(r)
+
+    if len(llm_reviews) >= 2:
+        pd["reviews"] = llm_reviews[:3]
+    else:
+        pd["reviews"] = pick_place_reviews(
+            llm_reviews,
+            place_name=pd.get("name") or "",
+            description=pd.get("description") or "",
+            exclude_ad=prioritize_non_ad,
+        )
+        if chunks and len(pd["reviews"]) < 2:
+            backfill_reviews_from_chunks(pd, chunks, min_count=2, max_count=3)
 
     for r in pd["reviews"]:
         r["text"] = trim_review_to_place_sentences(
@@ -1709,12 +1715,9 @@ async def search(req: SearchRequest):
     # 2. 벡터 검색 — build_retrieval_plan()에 따라 RPC를 1번 또는 카테고리별 여러 번 호출.
     #    정렬(is_ad 게이트 → 집중도 → quality_score → category → style → date)은
     #    RPC 내부에서 항상 고정으로 처리됨.
-    plan = build_retrieval_plan(req, itinerary_query, detail_query)
-    chunks: list[dict] = []
-
-    for call in plan:
+    async def fetch_plan_call(call: dict) -> list[dict]:
         res = await asyncio.to_thread(
-            lambda call=call: supabase.rpc("match_travel_chunks", {
+            lambda: supabase.rpc("match_travel_chunks", {
                 "query_embedding": query_vector,
                 "match_threshold": req.match_threshold,
                 "match_count": call["match_count"],
@@ -1730,7 +1733,11 @@ async def search(req: SearchRequest):
             f"[검색] category={call['filter_category']!r} 요청={call['match_count']} 확보={len(call_chunks)}",
             flush=True, file=sys.stderr,
         )
-        chunks.extend(call_chunks)
+        return call_chunks
+
+    plan = build_retrieval_plan(req, itinerary_query, detail_query)
+    plan_results = await asyncio.gather(*[fetch_plan_call(call) for call in plan])
+    chunks: list[dict] = [c for sub in plan_results for c in sub]
 
     non_ad_count = sum(1 for c in chunks if not c.get("is_ad"))
     ad_count = len(chunks) - non_ad_count
@@ -1781,27 +1788,30 @@ async def search(req: SearchRequest):
                 existing_ids.add(c.get("id"))
         print(f"[fallback] 최종 합산: {len(chunks)}개", flush=True, file=sys.stderr)
 
+    MAX_TOTAL_CHUNKS = 30
+    if len(chunks) > MAX_TOTAL_CHUNKS:
+        print(f"[상한] {len(chunks)}개 → {MAX_TOTAL_CHUNKS}개로 자름", flush=True, file=sys.stderr)
+        chunks = chunks[:MAX_TOTAL_CHUNKS]
+
     place_names_in_chunks = set()
     for c in chunks:
         if c.get("place_name"):
             for p in c["place_name"].split(","):
                 place_names_in_chunks.add(p.strip())
 
-    place_names_in_chunks = list(place_names_in_chunks)[:15]
+    place_names_in_chunks = list(place_names_in_chunks)[:8]
 
     if place_names_in_chunks:
         extra_tasks = [
             fetch_place_reviews(p, req.city, prioritize_non_ad)
             for p in place_names_in_chunks
         ]
-        try:
-            extra_results = await asyncio.gather(*extra_tasks)
-        except Exception as e:
-            print(f"fetch_place_reviews 실패: {e}", flush=True, file=sys.stderr)
-            extra_results = []
-
+        extra_results = await asyncio.gather(*extra_tasks, return_exceptions=True)
         extra_chunks = []
         for r in extra_results:
+            if isinstance(r, Exception):
+                print(f"fetch_place_reviews 개별 실패: {r}", flush=True, file=sys.stderr)
+                continue
             extra_chunks.extend(r)
 
         existing_links = {c.get("link") for c in chunks}
@@ -1864,19 +1874,6 @@ async def search(req: SearchRequest):
     def resolve_chunk_title(chunk: dict) -> str:
         return (chunk.get("title") or "").strip() or "네이버 블로그 후기"
 
-    def format_chunk_log(i: int, chunk: dict) -> str:
-        sim = chunk.get("similarity")
-        try:
-            sim_str = f"{float(sim):.3f}" if sim is not None else "?"
-        except (TypeError, ValueError):
-            sim_str = "?"
-        title_preview = (chunk.get("title") or "")[:30]
-        text_preview = (chunk.get("text") or "")[:60]
-        return f"[{i + 1}] similarity={sim_str} | {title_preview} | {text_preview}"
-
-    for i, c in enumerate(chunks):
-        print(format_chunk_log(i, c), flush=True, file=sys.stderr)
-
     context = "\n\n".join([
         f"[id:{i + 1}] [출처: {c.get('link', '')}] [날짜: {c.get('date', '')}] [제목: {resolve_chunk_title(c)}]\n"
         f"{clean_qna_text(c.get('text') or '') if c.get('content_type') == 'qna' else (c.get('text') or '')}"
@@ -1918,8 +1915,11 @@ async def search(req: SearchRequest):
             "sources": []
         }
 
-    print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
-    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True, file=sys.stderr)
+    print(
+        f"[LLM 응답] sections={len(result.get('sections', []))}, "
+        f"places_detail={sum(len(s.get('places_detail', [])) for s in result.get('sections', []))}",
+        flush=True, file=sys.stderr,
+    )
 
     for section in result.get("sections", []):
         content = section.get("content")
