@@ -2002,9 +2002,7 @@ async def search(req: SearchRequest):
     plan = build_retrieval_plan(req, itinerary_query, detail_query)
     cache_task = asyncio.create_task(check_answer_cache())
     youtube_task = asyncio.create_task(fetch_youtube_for_search(query_vector, req.city))
-    plan_task = asyncio.create_task(
-        asyncio.gather(*[fetch_plan_call(call) for call in plan])
-    )
+    plan_task = asyncio.gather(*[fetch_plan_call(call) for call in plan])
 
     cached_result = await cache_task
     print(f"[timing] 임베딩+캐시조회: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
@@ -2026,7 +2024,6 @@ async def search(req: SearchRequest):
             print(f"search_logs 저장 실패(캐시 히트): {e}", flush=True, file=sys.stderr)
         strip_refs_from_tip_sections(cached_result)
         await refresh_result_places(cached_result, req.city)
-        plan_task.cancel()
         youtube_task.cancel()
         return cached_result
 
