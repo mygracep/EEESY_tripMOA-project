@@ -1064,7 +1064,7 @@ def postprocess_place_detail(
     place_name = pd.get("name") or ""
     if itinerary:
         min_reviews = 1
-        max_reviews = 3
+        max_reviews = 2
     else:
         min_reviews = 1 if _is_attraction_name(place_name) else 2
         max_reviews = 3
@@ -2110,7 +2110,7 @@ async def search(req: SearchRequest):
                 existing_ids.add(c.get("id"))
         print(f"[fallback] 최종 합산: {len(chunks)}개", flush=True, file=sys.stderr)
 
-    extra_article_chunks = await fetch_full_articles(chunks)
+    extra_article_chunks = await fetch_full_articles(chunks, max_articles=5)
     existing_ids = {c.get("id") for c in chunks}
     added = 0
     for c in extra_article_chunks:
