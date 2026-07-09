@@ -186,6 +186,11 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - 카테고리는 후기 데이터에 있는 내용 기준으로만. 없는 카테고리 만들지 말 것.
 
 [일정형 쿼리 처리 — 일정형일 때 최우선, 추천형 규칙 무시]
+[⚠️ 전체 응답 분량 제한 — 반드시 지킬 것]
+- 전체 응답의 places_detail 총 개수는 최대 10개 (Day 섹션 합산 + 숙소 섹션 포함, 여행 팁 제외).
+- description은 정확히 2문장, 문장당 25자 이내.
+- reviews.text는 실제 경험이 드러나는 문장이면 3문장까지 길게 인용해도 좋음.
+  단, 관련 없는 문장을 억지로 붙여서 늘리지 말 것 — 짧아도 되니 관련성이 우선.
 - ~일정, ~코스, ~동선, N박N일 키워드면 일정형으로 판단.
 - 섹션 구성: icon "" (빈값), title "DAY1 — 소제목" 형식. 1️⃣·"1일차"·Day1 소문자 금지. 반드시 DAY1, DAY2.
 - Day content 형식 (오전/오후/저녁 라벨 사용 금지):
@@ -2125,7 +2130,7 @@ async def search(req: SearchRequest):
                 existing_ids.add(c.get("id"))
         print(f"[fallback] 최종 합산: {len(chunks)}개", flush=True, file=sys.stderr)
 
-    extra_article_chunks = await fetch_full_articles(chunks, max_articles=5)
+    extra_article_chunks = await fetch_full_articles(chunks, max_articles=3)
     existing_ids = {c.get("id") for c in chunks}
     added = 0
     for c in extra_article_chunks:
