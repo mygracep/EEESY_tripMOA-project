@@ -2455,6 +2455,13 @@ async def search(req: SearchRequest):
 
     renumber_source_refs(result)
 
+    for section in result.get("sections", []):
+        for pd in section.get("places_detail", []):
+            print(
+                f"[최종리뷰] {pd.get('name')!r} reviews={len(pd.get('reviews', []))}개",
+                flush=True, file=sys.stderr,
+            )
+
     def _insert_search_log():
         try:
             supabase.table("search_logs").insert({
