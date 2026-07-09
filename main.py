@@ -2249,7 +2249,7 @@ async def search(req: SearchRequest):
         for i, c in enumerate(chunks)
     ])
 
-    place_candidates = build_place_candidates(chunks)
+    place_candidates = build_place_candidates(chunks, max_places=30)
     print(f"[코드후보] {json.dumps(place_candidates, ensure_ascii=False, default=str)}", flush=True, file=sys.stderr)
 
     system_prompt = build_system_prompt(req.query)
