@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -24,6 +25,16 @@ BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
 PLACE_PHOTOS_ENABLED = False
 PLACES_API_ENABLED = True
 FETCH_PLACE_REVIEWS_ENABLED = False  # 임시 — 새 RPC로도 충분한지 테스트
+MAX_TOTAL_CHUNKS = 20  # LLM 컨텍스트 상한 (30→20, 토큰·지연 절감)
+CONTEXT_CHUNK_MAX_CHARS = 800  # 청크 본문 truncate (Gemini 입력 축소)
+QUALITY_FLOOR = 0.4
+ITINERARY_MIN_GUARANTEE = {
+    "일정/동선": 4,
+    "음식/맛집": 3,
+    "관광/체험": 3,
+    "숙소": 2,
+    "교통/이동": 2,
+}
 
 CITY_ALIASES = {
     "마쓰야마": ["마쓰야마", "마츠야마", "松山", "도고온천", "시코쿠"],
@@ -605,7 +616,7 @@ def build_retrieval_plan(
         return [{"filter_category": req.category, "match_count": 5}]
 
     # 추천형(기본): 단일 카테고리, 넉넉히
-    return [{"filter_category": req.category, "match_count": req.match_count}]
+    return [{"filter_category": req.category, "match_count": 20}]
 
 
 async def fetch_place_reviews(
@@ -927,6 +938,7 @@ def _review_ref_id(review: dict) -> int | None:
 
 
 async def extend_result_reviews(result: dict, chunks: list) -> None:
+    pending: list[tuple[dict, str, dict]] = []
     for section in result.get("sections", []):
         for pd in section.get("places_detail", []):
             for review in pd.get("reviews", []):
@@ -938,9 +950,17 @@ async def extend_result_reviews(result: dict, chunks: list) -> None:
                 ref_id = _review_ref_id(review)
                 if ref_id is None or ref_id < 1 or ref_id > len(chunks):
                     continue
-                extended = await extend_truncated_review(text, chunks[ref_id - 1])
-                if extended != text:
-                    review["text"] = extended
+                pending.append((review, text, chunks[ref_id - 1]))
+
+    if not pending:
+        return
+
+    extended_texts = await asyncio.gather(
+        *[extend_truncated_review(text, chunk) for _, text, chunk in pending]
+    )
+    for (review, text, _), extended in zip(pending, extended_texts):
+        if extended != text:
+            review["text"] = extended
 
 
 def validate_warning_ref(
@@ -1492,7 +1512,7 @@ class SearchRequest(BaseModel):
     category: str = None
     travel_style: str = None
     match_threshold: float = 0.65
-    match_count: int = 25
+    match_count: int = 20
 
 
 def _places_search_queries(place_name: str, city: str | None) -> list[str]:
@@ -1779,6 +1799,38 @@ async def enrich_youtube_titles(videos: list[dict]) -> list[dict]:
     return enriched
 
 
+async def fetch_youtube_for_search(query_vector: list, city: str | None) -> list[dict]:
+    try:
+        youtube_res = await asyncio.to_thread(
+            lambda: supabase.rpc("match_youtube_videos", {
+                "query_embedding": query_vector,
+                "match_threshold": 0.6,
+                "match_count": 3,
+                "filter_city": city,
+            }).execute()
+        )
+        videos = youtube_res.data or []
+        return await enrich_youtube_titles(videos)
+    except Exception as e:
+        print(
+            f"match_youtube_videos 실패 (후기 검색은 계속): {e}",
+            flush=True,
+            file=sys.stderr,
+        )
+        return []
+
+
+def chunk_context_text(chunk: dict) -> str:
+    raw = (
+        clean_qna_text(chunk.get("text") or "")
+        if chunk.get("content_type") == "qna"
+        else (chunk.get("text") or "")
+    )
+    if len(raw) > CONTEXT_CHUNK_MAX_CHARS:
+        return raw[:CONTEXT_CHUNK_MAX_CHARS] + "…"
+    return raw
+
+
 @app.get("/photo/{photo_name:path}")
 async def photo_proxy(photo_name: str, maxWidthPx: int = 800):
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1803,6 +1855,7 @@ async def search(req: SearchRequest):
         config={"output_dimensionality": 768}
     )
     query_vector = result.embeddings[0].values
+    embed_t0 = time.monotonic()
     print(f"[임베딩] 타입: {type(query_vector)}, 차원: {len(query_vector)}, 앞 5개 값: {query_vector[:5]}", flush=True, file=sys.stderr)
 
     non_ad_count = 0
@@ -1842,6 +1895,8 @@ async def search(req: SearchRequest):
     except Exception as e:
         print(f"answer_cache 조회 실패: {e}", flush=True, file=sys.stderr)
 
+    print(f"[timing] 임베딩+캐시조회: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
+
     itinerary_query = is_itinerary_query(req.query)
     detail_query = is_detail_query(req.query)
     prioritize_non_ad = should_prioritize_non_ad(req.query)
@@ -1849,6 +1904,9 @@ async def search(req: SearchRequest):
     print(f"[요청확인] city={req.city!r}, category={req.category!r}, travel_style={req.travel_style!r}, match_threshold={req.match_threshold}", flush=True, file=sys.stderr)
     print(f"[인코딩] city={req.city!r}, utf8_bytes={len(req.city.encode('utf-8')) if req.city else 0}", flush=True, file=sys.stderr)
     print(f"[게이트] itinerary={itinerary_query}, detail={detail_query}, prioritize_non_ad={prioritize_non_ad}", flush=True, file=sys.stderr)
+
+    search_t0 = time.monotonic()
+    youtube_task = asyncio.create_task(fetch_youtube_for_search(query_vector, req.city))
 
     # 2. 벡터 검색 — build_retrieval_plan()에 따라 RPC를 1번 또는 카테고리별 여러 번 호출.
     #    정렬(is_ad 게이트 → 집중도 → quality_score → category → style → date)은
@@ -1876,6 +1934,7 @@ async def search(req: SearchRequest):
     plan = build_retrieval_plan(req, itinerary_query, detail_query)
     plan_results = await asyncio.gather(*[fetch_plan_call(call) for call in plan])
     chunks: list[dict] = [c for sub in plan_results for c in sub]
+    print(f"[timing] RPC 검색: {time.monotonic() - search_t0:.1f}s", flush=True, file=sys.stderr)
 
     non_ad_count = sum(1 for c in chunks if not c.get("is_ad"))
     ad_count = len(chunks) - non_ad_count
@@ -1887,20 +1946,6 @@ async def search(req: SearchRequest):
 
     if len(chunks) < 5:
         fallback_used = True
-        res_debug = await asyncio.to_thread(
-            lambda: supabase.rpc("match_travel_chunks", {
-                "query_embedding": query_vector,
-                "match_threshold": 0.0,
-                "match_count": 10,
-                "filter_city": req.city,
-                "filter_category": req.category,
-                "filter_travel_style": req.travel_style,
-                "prioritize_non_ad": prioritize_non_ad,
-            }).execute()
-        )
-        for c in (res_debug.data or [])[:10]:
-            print(f"[디버그] sim={c.get('similarity'):.3f} | {c.get('title','')[:30]}", flush=True, file=sys.stderr)
-
         fallback_threshold = max(0.5, req.match_threshold - 0.15)
         print(f"[fallback] threshold {req.match_threshold} → {fallback_threshold}로 재검색", flush=True, file=sys.stderr)
         res_fallback = await asyncio.to_thread(
@@ -1926,10 +1971,45 @@ async def search(req: SearchRequest):
                 existing_ids.add(c.get("id"))
         print(f"[fallback] 최종 합산: {len(chunks)}개", flush=True, file=sys.stderr)
 
-    MAX_TOTAL_CHUNKS = 30
     if len(chunks) > MAX_TOTAL_CHUNKS:
-        print(f"[상한] {len(chunks)}개 → {MAX_TOTAL_CHUNKS}개로 자름", flush=True, file=sys.stderr)
-        chunks = chunks[:MAX_TOTAL_CHUNKS]
+        if itinerary_query:
+            kept: list[dict] = []
+            kept_ids: set[int] = set()
+
+            for cat, min_n in ITINERARY_MIN_GUARANTEE.items():
+                cat_chunks = [c for c in chunks if c.get("category") == cat]
+                for c in cat_chunks[:min_n]:
+                    kept.append(c)
+                    kept_ids.add(id(c))
+
+            remaining_slots = MAX_TOTAL_CHUNKS - len(kept)
+            for c in chunks:
+                if remaining_slots <= 0:
+                    break
+                if id(c) in kept_ids:
+                    continue
+                if (c.get("quality_score") or 0) <= QUALITY_FLOOR:
+                    continue
+                kept.append(c)
+                kept_ids.add(id(c))
+                remaining_slots -= 1
+
+            guaranteed = sum(
+                min(len([c for c in chunks if c.get("category") == cat]), n)
+                for cat, n in ITINERARY_MIN_GUARANTEE.items()
+            )
+            print(
+                f"[상한] 일정형 {len(chunks)}개 → {len(kept)}개 "
+                f"(최소보장 {guaranteed}개 + "
+                f"quality>{QUALITY_FLOOR} 채움 {len(kept) - guaranteed}개)",
+                flush=True,
+                file=sys.stderr,
+            )
+            chunks = kept
+        else:
+            chunks.sort(key=lambda c: float(c.get("similarity") or 0), reverse=True)
+            print(f"[상한] {len(chunks)}개 → {MAX_TOTAL_CHUNKS}개로 자름", flush=True, file=sys.stderr)
+            chunks = chunks[:MAX_TOTAL_CHUNKS]
 
     place_names_in_chunks = set()
     for c in chunks:
@@ -1958,24 +2038,8 @@ async def search(req: SearchRequest):
                 chunks.append(c)
                 existing_links.add(c.get("link"))
 
-    youtube_videos = []
-    try:
-        youtube_res = await asyncio.to_thread(
-            lambda: supabase.rpc("match_youtube_videos", {
-                "query_embedding": query_vector,
-                "match_threshold": 0.6,
-                "match_count": 3,
-                "filter_city": req.city
-            }).execute()
-        )
-        youtube_videos = youtube_res.data or []
-        youtube_videos = await enrich_youtube_titles(youtube_videos)
-    except Exception as e:
-        print(
-            f"match_youtube_videos 실패 (후기 검색은 계속): {e}",
-            flush=True,
-            file=sys.stderr,
-        )
+    youtube_videos = await youtube_task
+    print(f"[timing] 검색+유튜브: {time.monotonic() - search_t0:.1f}s", flush=True, file=sys.stderr)
 
     if not chunks:
         try:
@@ -2014,7 +2078,7 @@ async def search(req: SearchRequest):
 
     context = "\n\n".join([
         f"[id:{i + 1}] [출처: {c.get('link', '')}] [날짜: {c.get('date', '')}] [제목: {resolve_chunk_title(c)}]\n"
-        f"{clean_qna_text(c.get('text') or '') if c.get('content_type') == 'qna' else (c.get('text') or '')}"
+        f"{chunk_context_text(c)}"
         for i, c in enumerate(chunks)
     ])
 
@@ -2024,6 +2088,7 @@ async def search(req: SearchRequest):
     system_prompt = build_system_prompt(req.query)
 
     # 4. Gemini 답변 생성
+    llm_t0 = time.monotonic()
     response = await gemini_client.aio.models.generate_content(
         model="gemini-2.5-flash",
         contents=f"{system_prompt}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
@@ -2032,6 +2097,8 @@ async def search(req: SearchRequest):
             "response_mime_type": "application/json",
         }
     )
+
+    print(f"[timing] Gemini LLM: {time.monotonic() - llm_t0:.1f}s", flush=True, file=sys.stderr)
 
     # 5. JSON 파싱
     try:
@@ -2070,8 +2137,10 @@ async def search(req: SearchRequest):
     if itinerary_query:
         normalize_itinerary_response(result, chunks, prioritize_non_ad)
     enrich_place_warnings(result, chunks, prioritize_non_ad)
+    post_t0 = time.monotonic()
     await extend_result_reviews(result, chunks)
     rank_and_trim_places_detail(result, chunks, max_per_section=3)
+    print(f"[timing] 후처리: {time.monotonic() - post_t0:.1f}s", flush=True, file=sys.stderr)
 
     all_places_detail = [
         pd for section in result.get("sections", [])
@@ -2094,7 +2163,8 @@ async def search(req: SearchRequest):
     )
 
     places = []
-    if place_names:
+    places_t0 = time.monotonic()
+    if PLACES_API_ENABLED and place_names:
         tasks = [get_place_details(name, req.city) for name in place_names]
         details_list = await asyncio.gather(*tasks)
         for name, details in zip(place_names, details_list):
@@ -2107,6 +2177,9 @@ async def search(req: SearchRequest):
                     "photo_urls": details["photo_urls"],
                     "description": ""
                 })
+
+    if place_names:
+        print(f"[timing] Places API: {time.monotonic() - places_t0:.1f}s", flush=True, file=sys.stderr)
     
     print(
         f"[사진] place_names={place_names}, 확보된 places={len(places)}개, "
@@ -2208,9 +2281,9 @@ async def search(req: SearchRequest):
 
     renumber_source_refs(result)
 
-    try:
-        await asyncio.to_thread(
-            lambda: supabase.table("search_logs").insert({
+    def _insert_search_log():
+        try:
+            supabase.table("search_logs").insert({
                 "query": req.query,
                 "city": req.city,
                 "category": req.category,
@@ -2225,24 +2298,27 @@ async def search(req: SearchRequest):
                 "places_detail_count": places_detail_count,
                 "avg_reviews_per_place": round(avg_reviews_per_place, 2),
             }).execute()
-        )
-    except Exception as e:
-        print(f"search_logs 저장 실패: {e}", flush=True, file=sys.stderr)
+        except Exception as e:
+            print(f"search_logs 저장 실패: {e}", flush=True, file=sys.stderr)
 
-    try:
-        if result.get("sections"):
-            await asyncio.to_thread(
-                lambda: supabase.table("answer_cache").insert({
-                    "query": req.query,
-                    "query_embedding": query_vector,
-                    "city": req.city,
-                    "category": req.category,
-                    "travel_style": req.travel_style,
-                    "result": result,
-                }).execute()
-            )
-    except Exception as e:
-        print(f"answer_cache 저장 실패: {e}", flush=True, file=sys.stderr)
+    def _insert_answer_cache():
+        try:
+            supabase.table("answer_cache").insert({
+                "query": req.query,
+                "query_embedding": query_vector,
+                "city": req.city,
+                "category": req.category,
+                "travel_style": req.travel_style,
+                "result": result,
+            }).execute()
+        except Exception as e:
+            print(f"answer_cache 저장 실패: {e}", flush=True, file=sys.stderr)
+
+    print(f"[timing] 총 소요: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
+
+    asyncio.create_task(asyncio.to_thread(_insert_search_log))
+    if result.get("sections"):
+        asyncio.create_task(asyncio.to_thread(_insert_answer_cache))
 
     return result
 
