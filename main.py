@@ -612,26 +612,37 @@ ITINERARY_QUOTAS = {
     "관광/체험": 6,
     "숙소": 4,
     "교통/이동": 3,
+    "준비/쇼핑": 3,
+}
+
+ITINERARY_CATEGORY_THRESHOLD_OVERRIDE = {
+    "교통/이동": 0.55,
 }
 
 
 def build_retrieval_plan(
     req: "SearchRequest", itinerary_query: bool, detail_query: bool
 ) -> list[dict]:
-    """match_travel_chunks RPC를 몇 번, 어떤 category·count로 부를지 결정.
+    """match_travel_chunks RPC를 몇 번, 어떤 category·count·threshold로 부를지 결정.
     (정렬 기준 자체는 RPC 안에서 항상 고정 — 여기는 '구성'만 결정)
     """
     if itinerary_query:
         return [
-            {"filter_category": cat, "match_count": count}
+            {
+                "filter_category": cat,
+                "match_count": count,
+                "match_threshold": ITINERARY_CATEGORY_THRESHOLD_OVERRIDE.get(
+                    cat, req.match_threshold
+                ),
+            }
             for cat, count in ITINERARY_QUOTAS.items()
         ]
 
     if detail_query:
-        return [{"filter_category": req.category, "match_count": 5}]
+        return [{"filter_category": req.category, "match_count": 5, "match_threshold": req.match_threshold}]
 
     # 추천형(기본): 단일 카테고리, 넉넉히
-    return [{"filter_category": req.category, "match_count": 20}]
+    return [{"filter_category": req.category, "match_count": 20, "match_threshold": req.match_threshold}]
 
 
 async def fetch_place_reviews(
@@ -2008,7 +2019,7 @@ async def search(req: SearchRequest):
         res = await asyncio.to_thread(
             lambda: supabase.rpc("match_travel_chunks", {
                 "query_embedding": query_vector,
-                "match_threshold": req.match_threshold,
+                "match_threshold": call.get("match_threshold", req.match_threshold),
                 "match_count": call["match_count"],
                 "filter_city": req.city,
                 "filter_category": call["filter_category"],
