@@ -1422,9 +1422,6 @@ def normalize_itinerary_response(
             cleaned = [_clean_itinerary_line(line) for line in content.split("\n")]
             section["content"] = "\n".join(line for line in cleaned if line.strip())
 
-        for pd in section.get("places_detail", []):
-            postprocess_place_detail(pd, chunks, prioritize_non_ad, itinerary=True)
-
 
 def collect_place_names_for_api(
     result: dict, limit: int = 5, itinerary: bool = False
