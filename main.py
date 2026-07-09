@@ -369,6 +369,11 @@ QUESTION_RE = re.compile(
     re.I,
 )
 OPINION_RE = re.compile(r"포기하면|이견|넣고\s*싶은데|넣고\s*싶어", re.I)
+INTENT_RE = re.compile(
+    r"할\s*예정|하려고\s*(?:해요|합니다|생각)|넣고\s*싶|가고\s*싶|하고\s*싶어(?:요|서)?$|"
+    r"계획\s*(?:중|이에요|입니다)|생각\s*중",
+    re.I,
+)
 ITINERARY_DUMP_RE = re.compile(
     r"(?:/|->|→).*(?:/|->|→)|주차장-|복귀.*취침|저녁식사후|하부\s*무료",
     re.I,
@@ -542,6 +547,8 @@ def is_valid_review_text(text: str) -> bool:
     if QUESTION_RE.search(t):
         return False
     if OPINION_RE.search(t):
+        return False
+    if INTENT_RE.search(t):
         return False
     return True
 
@@ -1997,6 +2004,12 @@ async def search(req: SearchRequest):
             f"[검색] category={call['filter_category']!r} 요청={call['match_count']} 확보={len(call_chunks)}",
             flush=True, file=sys.stderr,
         )
+        for c in call_chunks:
+            print(
+                f"  [상세] category={c.get('category')!r} place_name={c.get('place_name')!r} "
+                f"sim={c.get('similarity', 0):.3f} text={(c.get('text') or '')[:60]!r}",
+                flush=True, file=sys.stderr,
+            )
         return call_chunks
 
     plan = build_retrieval_plan(req, itinerary_query, detail_query)
@@ -2052,6 +2065,7 @@ async def search(req: SearchRequest):
                 "filter_category": req.category,
                 "filter_travel_style": req.travel_style,
                 "prioritize_non_ad": prioritize_non_ad,
+                "hard_category": itinerary_query,
             }).execute()
         )
         fallback_chunks = [
