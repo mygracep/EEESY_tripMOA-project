@@ -2,6 +2,7 @@ import os
 import json
 import re
 import time
+from collections import Counter
 from pathlib import Path
 
 import httpx
@@ -1054,6 +1055,10 @@ def postprocess_place_detail(
         )
         r["text"] = trimmed if trimmed else r["text"]
     pd["reviews"] = [r for r in pd["reviews"] if (r.get("text") or "").strip()]
+
+    ref_ids = [r.get("ref") for r in pd["reviews"] if r.get("ref") is not None]
+    pd["_category"] = _majority_category(chunks, ref_ids)
+
     raw_warnings = pd.get("warnings") or []
     description = pd.get("description") or ""
     sanitized = [
@@ -1332,40 +1337,61 @@ def _is_attraction_name(name: str) -> bool:
     return bool(ATTRACTION_NAME_RE.search(name or ""))
 
 
-def _place_photo_priority(name: str) -> int:
-    """사진 API 우선순위: 명소(0) → 숙소(1) → 맛집(2). 쇼핑·이동은 99(제외)."""
-    if re.search(r"공항|이동수단|^이동$|출국|입국|도착", name, re.I):
-        return 99
-    if re.search(r"쇼핑|마켓|백화점|아울렛|면세", name, re.I):
-        return 99
-    if re.search(
-        r"관광|신사|사찰|USJ|스튜디오|박물관|공원|타워|성|전망|이나리|유니버설|폭포|해변|계곡|온천|폭",
-        name,
-        re.I,
-    ):
-        return 0
-    if re.search(r"호텔|숙소|료칸|게스트|민박|펜션|inn", name, re.I):
-        return 1
-    if re.search(r"맛집|식당|카페|타코|오코노미|라멘|스시", name, re.I):
-        return 2
-    return 0
+NON_RESOLVABLE_PLACE_RE = re.compile(
+    r"^(?:우버\s*택시|택시|렌터카|렌트카|셔틀버스|무료\s*셔틀버스|공유차량|"
+    r"노면\s*전차|트램|버스|지하철|전철|기차|열차)$",
+    re.I,
+)
 
 
-def _section_place_names(section: dict) -> list[str]:
-    names: list[str] = []
+def is_non_resolvable_place_name(name: str) -> bool:
+    """특정 지점이 아니라 일반 교통/서비스명이라 Places API로 못 찾는 이름 — 호출 자체를 건너뜀."""
+    n = re.sub(r"\(.*?\)", "", name or "").strip()
+    return bool(NON_RESOLVABLE_PLACE_RE.match(n))
+
+
+def _majority_category(chunks: list | None, ref_ids: list[int]) -> str | None:
+    """places_detail의 reviews가 참조한 원본 청크들의 category 중 다수를 대표값으로 사용."""
+    if not chunks:
+        return None
+    cats = []
+    for ref in ref_ids:
+        if ref and 1 <= ref <= len(chunks):
+            c = chunks[ref - 1].get("category")
+            if c:
+                cats.append(c)
+    if not cats:
+        return None
+    return Counter(cats).most_common(1)[0][0]
+
+
+PLACE_PHOTO_CATEGORY_PRIORITY = {
+    "관광/체험": 0,
+    "음식/맛집": 1,
+    "숙소": 2,
+}
+
+
+def _place_photo_priority(category: str | None) -> int:
+    """사진 API 우선순위: 관광지(0) > 맛집(1) > 숙소(2). 그 외 카테고리(교통/이동, 일정/동선,
+    준비/쇼핑 등)는 99로 사진 대상에서 완전히 제외."""
+    return PLACE_PHOTO_CATEGORY_PRIORITY.get(category or "", 99)
+
+
+def _section_place_items(section: dict) -> list[dict]:
+    """places_detail만 대상으로 함 — content의 **장소명**은 카테고리를 알 수 없어
+    사진 후보에서 제외(관광지/맛집/숙소만 사진을 불러오려면 카테고리가 확정된
+    places_detail 기반이어야 안전함)."""
+    items: list[dict] = []
     seen: set[str] = set()
 
-    def add(name: str) -> None:
-        n = (name or "").strip()
-        if n and n not in seen:
-            seen.add(n)
-            names.append(n)
-
     for pd in section.get("places_detail", []):
-        add(pd.get("name") or "")
-    for m in re.findall(r"\*\*(.+?)\*\*", section.get("content", "")):
-        add(m)
-    return names
+        name = (pd.get("name") or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            items.append({"name": name, "category": pd.get("_category")})
+
+    return items
 
 
 def normalize_itinerary_response(
@@ -1403,50 +1429,49 @@ def normalize_itinerary_response(
 def collect_place_names_for_api(
     result: dict, limit: int = 5, itinerary: bool = False
 ) -> list[str]:
-    """content **장소명** + places_detail.name 수집 (최대 limit개)."""
+    """places_detail의 category 기준으로 관광지/맛집/숙소만 사진 후보로 수집.
+    우선순위: 관광지(0) > 맛집(1) > 숙소(2). 그 외 카테고리·content-only 장소는 제외."""
     if itinerary:
         day_attractions: list[str] = []
-        rest_pool: list[str] = []
-        lodging_pool: list[str] = []
+        rest_pool: list[dict] = []
+        lodging_pool: list[dict] = []
         seen_sections: set[str] = set()
 
         for section in result.get("sections", []):
             title = section.get("title") or ""
             if re.search(r"여행\s*팁", title, re.I):
                 continue
-            names = _section_place_names(section)
+            items = [
+                i for i in _section_place_items(section)
+                if _place_photo_priority(i["category"]) < 99
+            ]
             if _is_lodging_section(section):
-                lodging_pool.extend(names)
+                lodging_pool.extend(items)
                 continue
             if _is_day_section_title(title):
                 primary = None
                 for prio in (0, 1, 2):
-                    candidates = [n for n in names if _place_photo_priority(n) == prio]
+                    candidates = [
+                        i["name"] for i in items
+                        if _place_photo_priority(i["category"]) == prio
+                    ]
                     if candidates:
                         primary = candidates[0]
                         break
-                if not primary:
-                    eligible = sorted(
-                        [n for n in names if _place_photo_priority(n) < 99],
-                        key=_place_photo_priority,
-                    )
-                    if eligible:
-                        primary = eligible[0]
                 if primary:
                     day_attractions.append(primary)
-                for n in names:
-                    if _place_photo_priority(n) < 99 and n not in seen_sections:
-                        seen_sections.add(n)
-                        rest_pool.append(n)
+                for i in items:
+                    if i["name"] not in seen_sections:
+                        seen_sections.add(i["name"])
+                        rest_pool.append(i)
             else:
-                for n in names:
-                    if _place_photo_priority(n) < 99 and n not in seen_sections:
-                        seen_sections.add(n)
-                        rest_pool.append(n)
+                for i in items:
+                    if i["name"] not in seen_sections:
+                        seen_sections.add(i["name"])
+                        rest_pool.append(i)
 
         picked: list[str] = []
         seen: set[str] = set()
-        # Day마다 사진 1장 이상 → Day 수만큼 API 호출 확보
         effective_limit = max(limit, len(day_attractions))
 
         def pick(name: str, *, required: bool = False) -> None:
@@ -1459,46 +1484,53 @@ def collect_place_names_for_api(
 
         for n in day_attractions:
             pick(n, required=True)
-        lodging_pool.sort(key=_place_photo_priority)
-        for n in lodging_pool:
-            pick(n)
-        rest_pool.sort(key=_place_photo_priority)
-        for n in rest_pool:
-            pick(n)
-        return picked
+        lodging_pool.sort(key=lambda i: _place_photo_priority(i["category"]))
+        for i in lodging_pool:
+            pick(i["name"])
+        rest_pool.sort(key=lambda i: _place_photo_priority(i["category"]))
+        for i in rest_pool:
+            pick(i["name"])
+        return [n for n in picked if not is_non_resolvable_place_name(n)]
 
     section_primaries: list[str] = []
-    rest_pool: list[str] = []
+    rest_pool: list[dict] = []
     seen: set[str] = set()
 
     for section in result.get("sections", []):
         if re.search(r"여행\s*팁", section.get("title", ""), re.I):
             continue
-        names = _section_place_names(section)
-        if not names:
+        items = [
+            i for i in _section_place_items(section)
+            if _place_photo_priority(i["category"]) < 99
+        ]
+        if not items:
             continue
-        primary = min(names, key=_place_photo_priority)
+        primary = min(items, key=lambda i: _place_photo_priority(i["category"]))["name"]
         if primary not in seen:
             seen.add(primary)
             section_primaries.append(primary)
-        for n in names:
-            if n not in seen:
-                seen.add(n)
-                rest_pool.append(n)
+        for i in items:
+            if i["name"] not in seen:
+                seen.add(i["name"])
+                rest_pool.append(i)
 
     effective_limit = max(limit, len(section_primaries))
     picked: list[str] = list(section_primaries)
-    for n in sorted(rest_pool, key=_place_photo_priority):
+    for i in sorted(rest_pool, key=lambda x: _place_photo_priority(x["category"])):
         if len(picked) >= effective_limit:
             break
-        picked.append(n)
+        if i["name"] not in picked:
+            picked.append(i["name"])
 
-    return picked[:effective_limit]
+    return [
+        n for n in picked if not is_non_resolvable_place_name(n)
+    ][:effective_limit]
 
 
 def select_itinerary_photo_places(result: dict, max_places: int = 3) -> list[str]:
     """Day 순서대로, 최대 max_places(=3)개 Day에서 대표 장소 1곳씩 선정.
-    Day 개수가 3보다 많으면 뒤쪽 Day는 사진 없이 넘어감(고정 3곳 정책)."""
+    관광지 > 맛집 > 숙소만 후보로 삼고, 해당 안 되는 카테고리는 제외.
+    Day에 관광지/맛집/숙소가 하나도 없으면 그 Day는 사진 없이 넘어감."""
     picked: list[str] = []
     seen: set[str] = set()
 
@@ -1512,19 +1544,24 @@ def select_itinerary_photo_places(result: dict, max_places: int = 3) -> list[str
             break
 
         places_detail = section.get("places_detail", [])
-        candidates = [pd for pd in places_detail if len(pd.get("reviews", [])) >= 2]
-        if not candidates:
-            candidates = places_detail
-        if not candidates:
+        eligible = [
+            pd for pd in places_detail
+            if _place_photo_priority(pd.get("_category")) < 99
+        ]
+        if not eligible:
             continue
 
-        candidates.sort(key=lambda pd: _place_photo_priority(pd.get("name", "")))
+        candidates = [pd for pd in eligible if len(pd.get("reviews", [])) >= 2]
+        if not candidates:
+            candidates = eligible
+
+        candidates.sort(key=lambda pd: _place_photo_priority(pd.get("_category")))
         chosen = candidates[0]["name"]
         if chosen not in seen:
             seen.add(chosen)
             picked.append(chosen)
 
-    return picked
+    return [n for n in picked if not is_non_resolvable_place_name(n)]
 
 
 def extract_map_title(query: str, city: str = None) -> str:
@@ -1564,9 +1601,9 @@ def _places_search_queries(place_name: str, city: str | None) -> list[str]:
 
     if city:
         queries.append(f"{name} {city}")
-        for alias in CITY_ALIASES.get(city, []):
-            if alias != city:
-                queries.append(f"{name} {alias}")
+        aliases = [a for a in CITY_ALIASES.get(city, []) if a != city]
+        if aliases:
+            queries.append(f"{name} {aliases[0]}")
     queries.append(name)
 
     seen: set[str] = set()
@@ -1653,6 +1690,8 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
         cached_photos = row.get("photo_urls") or []
         already_checked = row.get("photos_checked", False)
         has_coords = row.get("lat") is not None and row.get("lng") is not None
+        if already_checked and not has_coords:
+            return None
         if not PLACE_PHOTOS_ENABLED and has_coords:
             return {"lat": row["lat"], "lng": row["lng"], "photo_urls": []}
         if already_checked and has_coords and (cached_photos or not PLACE_PHOTOS_ENABLED):
@@ -1678,6 +1717,20 @@ async def get_place_details(place_name: str, city: str = None) -> dict:
 
         if not place:
             print(f"[Places] 미매칭 place={place_name!r} city={city!r}", flush=True, file=sys.stderr)
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase.table("place_cache")
+                    .upsert({
+                        "place_key": cache_key,
+                        "lat": None,
+                        "lng": None,
+                        "photo_urls": [],
+                        "photos_checked": True,
+                    })
+                    .execute()
+                )
+            except Exception as e:
+                print(f"실패 캐싱 실패: {e}", flush=True, file=sys.stderr)
             return None
 
         lat = place["location"]["latitude"]
