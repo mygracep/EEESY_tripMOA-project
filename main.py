@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import uuid
 import time
 from collections import Counter
 from pathlib import Path
@@ -1160,12 +1161,19 @@ def rank_and_trim_places_detail(
     result: dict, chunks: list | None, max_per_section: int = 3
 ) -> None:
     for section in result.get("sections", []):
-        candidates = [
-            pd for pd in section.get("places_detail", [])
-            if pd.get("reviews")
-        ]
+        all_pd = section.get("places_detail", [])
+        candidates = [pd for pd in all_pd if pd.get("reviews")]
+        dropped_no_review = [pd.get("name") for pd in all_pd if not pd.get("reviews")]
         candidates.sort(key=lambda pd: _place_detail_rank(pd, chunks), reverse=True)
-        section["places_detail"] = candidates[:max_per_section]
+        kept = candidates[:max_per_section]
+        dropped_by_cap = [pd.get("name") for pd in candidates[max_per_section:]]
+        if dropped_no_review or dropped_by_cap:
+            print(
+                f"[랭킹제거] 섹션={section.get('title')!r} "
+                f"리뷰없어제거={dropped_no_review} 개수초과로제거={dropped_by_cap}",
+                flush=True, file=sys.stderr,
+            )
+        section["places_detail"] = kept
 
 
 ITINERARY_KEYWORDS_RE = re.compile(r"일정|코스|동선|루트|여행\s*계획|당일치기|하루\s*코스")
@@ -1973,6 +1981,7 @@ async def photo_proxy(photo_name: str, maxWidthPx: int = 800):
 
 @app.post("/search")
 async def search(req: SearchRequest):
+    search_id = str(uuid.uuid4())
     # 1. 쿼리 임베딩
     embed_text = f"{req.city} {req.query}" if req.city else req.query
     result = await gemini_client.aio.models.embed_content(
@@ -2061,6 +2070,7 @@ async def search(req: SearchRequest):
                     "chunk_count": None,
                     "had_result": True,
                     "cache_hit": True,
+                    "search_id": search_id,
                 }).execute()
             )
         except Exception as e:
@@ -2068,6 +2078,7 @@ async def search(req: SearchRequest):
         strip_refs_from_tip_sections(cached_result)
         await refresh_result_places(cached_result, req.city)
         youtube_task.cancel()
+        cached_result["search_id"] = search_id
         return cached_result
 
     plan_results = await plan_task
@@ -2202,11 +2213,13 @@ async def search(req: SearchRequest):
                     "chunk_count": 0,
                     "had_result": False,
                     "cache_hit": False,
+                    "search_id": search_id,
                 }).execute()
             )
         except Exception as e:
             print(f"search_logs 저장 실패(결과없음): {e}", flush=True, file=sys.stderr)
         return {
+            "search_id": search_id,
             "summary": "관련 후기가 충분하지 않아요.",
             "sections": [],
             "warning": [],
@@ -2454,6 +2467,7 @@ async def search(req: SearchRequest):
                 "fallback_used": fallback_used,
                 "places_detail_count": places_detail_count,
                 "avg_reviews_per_place": round(avg_reviews_per_place, 2),
+                "search_id": search_id,
             }).execute()
         except Exception as e:
             print(f"search_logs 저장 실패: {e}", flush=True, file=sys.stderr)
@@ -2477,6 +2491,7 @@ async def search(req: SearchRequest):
     if result.get("sections"):
         asyncio.create_task(asyncio.to_thread(_insert_answer_cache))
 
+    result["search_id"] = search_id
     return result
 
 
@@ -2560,6 +2575,28 @@ def renumber_source_refs(result: dict) -> None:
                     review.pop("ref", None)
             else:
                 review.pop("ref", None)
+
+
+class FeedbackRequest(BaseModel):
+    search_id: str
+    rating: int
+    comment: str = None
+
+
+@app.post("/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("feedback").insert({
+                "search_id": req.search_id,
+                "rating": req.rating,
+                "comment": req.comment,
+            }).execute()
+        )
+        return {"ok": True}
+    except Exception as e:
+        print(f"feedback 저장 실패: {e}", flush=True, file=sys.stderr)
+        return {"ok": False}
 
 
 @app.get("/health")
