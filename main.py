@@ -926,6 +926,24 @@ def _fetch_travel_chunk_text(article_id, chunk_index: int) -> str | None:
     return (rows[0].get("text") or "").strip() or None
 
 
+async def fetch_full_articles(chunks: list[dict], max_articles: int = 10) -> list[dict]:
+    """RPC로 받은 청크들의 article_id를 모아, 해당 게시물의 전체 청크를
+    Supabase에서 추가로 가져온다. (규칙4: 아티클 단위로 묶어서 알짜 정보 놓치지 않기)"""
+    article_ids = list({
+        c.get("article_id") for c in chunks if c.get("article_id") is not None
+    })[:max_articles]
+    if not article_ids:
+        return []
+
+    res = await asyncio.to_thread(
+        lambda: supabase.table("travel_chunks")
+        .select("*")
+        .in_("article_id", article_ids)
+        .execute()
+    )
+    return res.data or []
+
+
 async def extend_truncated_review(text: str, chunk: dict) -> str:
     """reviews 후처리: 문장이 끊겼으면 같은 article_id의 다음 청크를 이어붙임."""
     article_id = chunk.get("article_id")
@@ -2080,6 +2098,17 @@ async def search(req: SearchRequest):
                 chunks.append(c)
                 existing_ids.add(c.get("id"))
         print(f"[fallback] 최종 합산: {len(chunks)}개", flush=True, file=sys.stderr)
+
+    extra_article_chunks = await fetch_full_articles(chunks)
+    existing_ids = {c.get("id") for c in chunks}
+    added = 0
+    for c in extra_article_chunks:
+        if c.get("id") not in existing_ids and is_city_relevant(c, req.city):
+            chunks.append(c)
+            existing_ids.add(c.get("id"))
+            added += 1
+    if added:
+        print(f"[아티클보강] 같은 article_id 추가 청크 {added}개 확보 (총 {len(chunks)}개)", flush=True, file=sys.stderr)
 
     if len(chunks) > MAX_TOTAL_CHUNKS:
         if itinerary_query:
