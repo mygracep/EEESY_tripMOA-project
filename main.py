@@ -1953,40 +1953,6 @@ async def search(req: SearchRequest):
     qna_filtered_count = 0
     fallback_used = False
 
-    try:
-        cache_res = await asyncio.to_thread(
-            lambda: supabase.rpc("match_answer_cache", {
-                "query_embedding": query_vector,
-                "match_threshold": 0.95,
-                "filter_city": req.city,
-                "filter_category": req.category,
-                "filter_travel_style": req.travel_style,
-            }).execute()
-        )
-        if cache_res.data:
-            try:
-                await asyncio.to_thread(
-                    lambda: supabase.table("search_logs").insert({
-                        "query": req.query,
-                        "city": req.city,
-                        "category": req.category,
-                        "travel_style": req.travel_style,
-                        "chunk_count": None,
-                        "had_result": True,
-                        "cache_hit": True,
-                    }).execute()
-                )
-            except Exception as e:
-                print(f"search_logs 저장 실패(캐시 히트): {e}", flush=True, file=sys.stderr)
-            cached_result = cache_res.data[0]["result"]
-            strip_refs_from_tip_sections(cached_result)
-            await refresh_result_places(cached_result, req.city)
-            return cached_result
-    except Exception as e:
-        print(f"answer_cache 조회 실패: {e}", flush=True, file=sys.stderr)
-
-    print(f"[timing] 임베딩+캐시조회: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
-
     itinerary_query = is_itinerary_query(req.query)
     detail_query = is_detail_query(req.query)
     prioritize_non_ad = should_prioritize_non_ad(req.query)
@@ -1996,11 +1962,23 @@ async def search(req: SearchRequest):
     print(f"[게이트] itinerary={itinerary_query}, detail={detail_query}, prioritize_non_ad={prioritize_non_ad}", flush=True, file=sys.stderr)
 
     search_t0 = time.monotonic()
-    youtube_task = asyncio.create_task(fetch_youtube_for_search(query_vector, req.city))
 
-    # 2. 벡터 검색 — build_retrieval_plan()에 따라 RPC를 1번 또는 카테고리별 여러 번 호출.
-    #    정렬(is_ad 게이트 → 집중도 → quality_score → category → style → date)은
-    #    RPC 내부에서 항상 고정으로 처리됨.
+    async def check_answer_cache() -> dict | None:
+        try:
+            cache_res = await asyncio.to_thread(
+                lambda: supabase.rpc("match_answer_cache", {
+                    "query_embedding": query_vector,
+                    "match_threshold": 0.95,
+                    "filter_city": req.city,
+                    "filter_category": req.category,
+                    "filter_travel_style": req.travel_style,
+                }).execute()
+            )
+            return cache_res.data[0]["result"] if cache_res.data else None
+        except Exception as e:
+            print(f"answer_cache 조회 실패: {e}", flush=True, file=sys.stderr)
+            return None
+
     async def fetch_plan_call(call: dict) -> list[dict]:
         res = await asyncio.to_thread(
             lambda: supabase.rpc("match_travel_chunks", {
@@ -2022,7 +2000,37 @@ async def search(req: SearchRequest):
         return call_chunks
 
     plan = build_retrieval_plan(req, itinerary_query, detail_query)
-    plan_results = await asyncio.gather(*[fetch_plan_call(call) for call in plan])
+    cache_task = asyncio.create_task(check_answer_cache())
+    youtube_task = asyncio.create_task(fetch_youtube_for_search(query_vector, req.city))
+    plan_task = asyncio.create_task(
+        asyncio.gather(*[fetch_plan_call(call) for call in plan])
+    )
+
+    cached_result = await cache_task
+    print(f"[timing] 임베딩+캐시조회: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
+
+    if cached_result:
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("search_logs").insert({
+                    "query": req.query,
+                    "city": req.city,
+                    "category": req.category,
+                    "travel_style": req.travel_style,
+                    "chunk_count": None,
+                    "had_result": True,
+                    "cache_hit": True,
+                }).execute()
+            )
+        except Exception as e:
+            print(f"search_logs 저장 실패(캐시 히트): {e}", flush=True, file=sys.stderr)
+        strip_refs_from_tip_sections(cached_result)
+        await refresh_result_places(cached_result, req.city)
+        plan_task.cancel()
+        youtube_task.cancel()
+        return cached_result
+
+    plan_results = await plan_task
     chunks: list[dict] = [c for sub in plan_results for c in sub]
     print(f"[timing] RPC 검색: {time.monotonic() - search_t0:.1f}s", flush=True, file=sys.stderr)
 
