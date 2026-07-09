@@ -196,13 +196,14 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - Day 섹션 다음·여행 팁 직전에 icon "🏨", title "숙소 추천" (title에 🏨 이모지 중복 금지, icon만 사용).
 - Day에는 🍜 맛집·⛩️ 관광·🚆 이동 포함 가능.
 - **Day(섹션)당 places_detail은 최대 3개.** 언급된 장소가 3개보다 많으면,
-  참고 후기에서 해당 장소의 실경험 리뷰가 2개 이상 확보되는 장소를 우선 선정.
-- 리뷰가 1개 이하로만 확인되는 장소는 places_detail을 만들지 말고 content에 이름만 언급.
+  참고 후기에서 해당 장소의 실경험 리뷰가 2개 이상 확보되는 장소를 우선 선정. 1개뿐이어도 places_detail 가능.
+- 리뷰가 **아예 없는** 장소만 places_detail을 생략하고 content에 이름만 언급.
 - 정말 인기 명소라 후기 자체가 없는 경우가 아니면, 리뷰 부족을 이유로 장소 자체를
   일정에서 빼지는 말 것 — 리뷰만 생략하고 이름은 유지.
 - places_detail: 선정된 장소(위 기준)마다 항목 작성. Day당 최대 3개. 숙소 섹션은 places_detail 필수.
-  reviews 최소 2개·최대 3개, warnings negative 기반. 일정형도 추천형과 동일하게 필수.
-  - 각 장소 reviews **최소 2개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상 포함). 1개만 넣는 것 금지.
+  reviews 2개를 우선 목표로 하되, 참고 후기에 관련 리뷰가 1개뿐이면 1개만 넣을 것. warnings negative 기반.
+  - **reviews는 2개를 시도하고, 관련 리뷰가 1개뿐이면 1개로 충분함. 절대 3개 이상은 넣지 말 것.**
+  - 리뷰가 아예 없는 장소는 앞선 규칙대로 places_detail 자체를 생략(이름만 content 유지).
   - 같은 [ref:N]을 모든 장소에 반복 사용 금지. 장소마다 다른 출처 우선 사용. 참고 후기에 다양한 ref가 있다면 적극 활용할 것.
 - 마지막 섹션은 상황별추천이 아니라 여행 팁으로 끝낼 것.
 - 마지막 섹션: title "여행 팁" (이모지 없이), icon "💡", places_detail: []
@@ -234,7 +235,9 @@ JSON 외 다른 텍스트는 절대 출력금지.
   ✓ 후기는 장소명·대표 메뉴(도미밥/타이메시 등)와 직접 관련된 경험만
 - **reviews 제외:** 질문·문의(?/궁금/할까요), 일정·동선 나열(/, ->), 의견·제안만(~포기하면, ~넣고 싶)
 - **reviews 포함:** 방문 소감, 맛·분위기·동선 팁, 일정·동선 조언, 추천/비추, 아쉬운 **경험**
-- 장소당 실후기 **2~3개 필수** (참고 후기에 2개 이상 있으면 반드시 2개 이상). **1개만 넣거나 reviews 빈 배열 금지.**
+- **추천형**: 장소당 실후기 최소 2개, 가능하면 3개. 참고 후기에 충분히 있다면 2개 이하로 끝내지 말 것.
+- **일정형**: 장소당 실후기 2개를 우선 시도하되, 관련 리뷰가 1개뿐이면 1개도 허용. 3개 이상은 금지.
+- 둘 다 reviews 빈 배열은 금지 — 리뷰가 아예 없으면 그 장소는 places_detail 자체를 생성하지 말 것.
 - **reviews.ref 필수** — 각 review마다 ref(숫자)와 text 본문 [ref:N] 중 하나 이상 반드시 포함. ref 없는 review 금지.
 - 한 장소의 reviews 안에서도 같은 [ref:N]을 2개 이상 review에 쓰지 말 것. review마다 반드시 다른 ref 사용.
 - reviews.text: 후기 작성자의 **경험·감상 문장**만 원문 그대로 인용. 2~4문장·줄바꿈 포함 가능. 요약·한 줄 압축·청크 전체 복사 금지.
@@ -999,7 +1002,10 @@ def validate_warning_ref(
 
 
 def postprocess_place_detail(
-    pd: dict, chunks: list | None = None, prioritize_non_ad: bool = False
+    pd: dict,
+    chunks: list | None = None,
+    prioritize_non_ad: bool = False,
+    itinerary: bool = False,
 ) -> None:
     raw_reviews = pd.get("reviews", []) or []
     llm_reviews = []
@@ -1019,20 +1025,28 @@ def postprocess_place_detail(
         llm_reviews.append(r)
 
     place_name = pd.get("name") or ""
-    min_reviews = 1 if _is_attraction_name(place_name) else 2
+    if itinerary:
+        min_reviews = 1
+        max_reviews = 2
+    else:
+        min_reviews = 1 if _is_attraction_name(place_name) else 2
+        max_reviews = 3
 
     if len(llm_reviews) >= min_reviews:
-        pd["reviews"] = llm_reviews[:3]
+        pd["reviews"] = llm_reviews[:max_reviews]
     else:
         pd["reviews"] = pick_place_reviews(
             llm_reviews,
             min_count=min_reviews,
+            max_count=max_reviews,
             place_name=place_name,
             description=pd.get("description") or "",
             exclude_ad=prioritize_non_ad,
         )
         if chunks and len(pd["reviews"]) < min_reviews:
-            backfill_reviews_from_chunks(pd, chunks, min_count=min_reviews, max_count=3)
+            backfill_reviews_from_chunks(
+                pd, chunks, min_count=min_reviews, max_count=max_reviews
+            )
 
     for r in pd["reviews"]:
         trimmed = trim_review_to_place_sentences(
@@ -1063,11 +1077,14 @@ def postprocess_place_detail(
 
 
 def enrich_place_warnings(
-    result: dict, chunks: list | None = None, prioritize_non_ad: bool = False
+    result: dict,
+    chunks: list | None = None,
+    prioritize_non_ad: bool = False,
+    itinerary: bool = False,
 ) -> None:
     for section in result.get("sections", []):
         for pd in section.get("places_detail", []):
-            postprocess_place_detail(pd, chunks, prioritize_non_ad)
+            postprocess_place_detail(pd, chunks, prioritize_non_ad, itinerary=itinerary)
 
 
 def _place_detail_rank(pd: dict, chunks: list | None) -> tuple[int, int]:
@@ -1130,8 +1147,8 @@ ITINERARY_MODE_BLOCK = """
 □ Day content: 실제 **장소명**만. 카테고리 줄·동일 장소명 중복 금지. 이동 줄에 약 N분/N시간 필수
 □ Day에 🏨 숙소 없음 → icon 🏨 + title "숙소 추천" 섹션 별도 (places_detail 필수)
 □ Day(섹션)당 places_detail 최대 3개, 리뷰 2개 이상 확보 가능한 장소 우선 선별
-□ 리뷰 1개 이하 장소는 places_detail 생략(이름만 content 유지), 억지로 채우지 않음
-□ 각 Day: 선정된 places_detail마다 reviews(최소 2·최대 3) + warnings
+□ 리뷰가 아예 없는 장소만 places_detail 생략(이름만 content 유지), 억지로 채우지 않음
+□ 각 Day: 선정된 places_detail마다 reviews(2개 우선·1개 허용·최대 2) + warnings
 □ 장소마다 서로 다른 [ref:N] 우선 — 같은 ref를 모든 장소에 반복 금지
 □ 마지막만 title "여행 팁", icon "💡", places_detail: []
 """
@@ -1380,7 +1397,7 @@ def normalize_itinerary_response(
             section["content"] = "\n".join(line for line in cleaned if line.strip())
 
         for pd in section.get("places_detail", []):
-            postprocess_place_detail(pd, chunks, prioritize_non_ad)
+            postprocess_place_detail(pd, chunks, prioritize_non_ad, itinerary=True)
 
 
 def collect_place_names_for_api(
@@ -2166,7 +2183,7 @@ async def search(req: SearchRequest):
 
     if itinerary_query:
         normalize_itinerary_response(result, chunks, prioritize_non_ad)
-    enrich_place_warnings(result, chunks, prioritize_non_ad)
+    enrich_place_warnings(result, chunks, prioritize_non_ad, itinerary=itinerary_query)
     post_t0 = time.monotonic()
     await extend_result_reviews(result, chunks)
     rank_and_trim_places_detail(result, chunks, max_per_section=3)
