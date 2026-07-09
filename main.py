@@ -2120,6 +2120,13 @@ async def search(req: SearchRequest):
             "response_mime_type": "application/json",
         }
     )
+    usage = getattr(response, "usage_metadata", None)
+    if usage:
+        print(
+            f"[토큰] 입력={usage.prompt_token_count}, 출력={usage.candidates_token_count}, "
+            f"전체={usage.total_token_count}",
+            flush=True, file=sys.stderr,
+        )
 
     print(f"[timing] Gemini LLM: {time.monotonic() - llm_t0:.1f}s", flush=True, file=sys.stderr)
 
