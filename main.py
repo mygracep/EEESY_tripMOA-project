@@ -290,7 +290,11 @@ JSON 외 다른 텍스트는 절대 출력금지.
 - 개인 의견, 일정 부족 느낌, 질문형 문장 → warning 생성 금지
 - 각 항목은 **개조식 명사형 종결**로 작성 (~안됨, ~없음, ~필요, ~주의, ~불가 등). 해요체·완결된 문장 금지.
   예) "타이밍 티켓 없으면 입장 안됨", "현금만 가능, 카드 안됨", "저녁 6시 이후 상점가 문 닫음"
-- 글자수 제한 없음. 내용 전달에 필요한 만큼 자연스럽게.
+- **의미가 끝나지 않은 상태로 절대 자르지 말 것.** 아래는 금지되는 형태:
+  ✗ "가이드 입장료, 유료 관광지" (무슨 문제인지 불명확한 채 끊김)
+  ✗ "오전에 후지산이 잘 보이는" (동사 끝맺음 없이 끊김)
+  ✓ "가이드 입장료·유료 관광지 입장료 별도 부담", "오전 방문 시 후지산이 더 잘 보임"
+- 글자수 제한 없음. 위 예시(12~15자)는 참고용 길이일 뿐이며, 내용이 다 안 들어가면 20자 이상으로 늘려서 완결된 형태로 작성할 것. 짧게 맞추려고 문장을 끊는 것보다 길더라도 의미가 완전한 것이 우선.
 - 해당 negative review의 ref를 [ref:N]으로 표기
 - 예) negative "닌텐도 월드는 타이밍 티켓 없으면 못 들어가요" → warnings: ["타이밍 티켓 없으면 입장 안됨 [ref:1]"]
 - 정말 주의사항이 없는 positive-only 장소만 warnings: []
@@ -813,6 +817,21 @@ def sanitize_warning_text(text: str) -> str:
     return f"{body}{suffix}" if body else suffix.strip()
 
 
+VALID_WARNING_ENDING_RE = re.compile(
+    r"(?:안됨|없음|있음|필요|주의|불가|확인|방문|가능|휴무|마감|매진|제한|혼잡|대기"
+    r"|저렴함|비쌈|늦음|빠름|필수|한정|추천|비추|아쉬움|불편|편리|중요|권장|참고|발생)"
+    r"[.!]?$",
+)
+
+
+def is_warning_complete(text: str) -> bool:
+    """의미가 끝난 상태로 종결됐는지 확인 — 중간에 끊긴 워닝(예: '조기', '관광지') 걸러냄."""
+    t = INLINE_REF_RE.sub("", text or "").strip()
+    if not t:
+        return False
+    return bool(VALID_WARNING_ENDING_RE.search(t))
+
+
 def _ref_suffix_for_review(review: dict, text: str) -> str:
     ref = review.get("ref")
     if ref is not None:
@@ -1031,12 +1050,16 @@ def postprocess_place_detail(
     pd["warnings"] = [
         w
         for w in sanitized
-        if w and validate_warning_ref(w, place_name, description, chunks)
+        if w
+        and validate_warning_ref(w, place_name, description, chunks)
+        and is_warning_complete(w)
     ]
     if not pd["warnings"]:
         inferred = infer_warnings_from_reviews(pd.get("reviews", []))
         if inferred:
-            pd["warnings"] = inferred
+            pd["warnings"] = [
+                w for w in inferred if is_warning_complete(w)
+            ]
 
 
 def enrich_place_warnings(
