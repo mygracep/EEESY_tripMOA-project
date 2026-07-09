@@ -2006,7 +2006,8 @@ async def search(req: SearchRequest):
         )
         for c in call_chunks:
             print(
-                f"  [상세] category={c.get('category')!r} place_name={c.get('place_name')!r} "
+                f"  [상세] article_id={c.get('article_id')} chunk_index={c.get('chunk_index')} "
+                f"category={c.get('category')!r} place_name={c.get('place_name')!r} "
                 f"sim={c.get('similarity', 0):.3f} text={(c.get('text') or '')[:60]!r}",
                 flush=True, file=sys.stderr,
             )
