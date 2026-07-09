@@ -26,15 +26,15 @@ BACKEND_BASE_URL = "https://eeesytripmoa-project-production.up.railway.app"
 PLACE_PHOTOS_ENABLED = False
 PLACES_API_ENABLED = True
 FETCH_PLACE_REVIEWS_ENABLED = False  # 임시 — 새 RPC로도 충분한지 테스트
-MAX_TOTAL_CHUNKS = 20  # LLM 컨텍스트 상한 (30→20, 토큰·지연 절감)
+MAX_TOTAL_CHUNKS = 30
 CONTEXT_CHUNK_MAX_CHARS = 800  # 청크 본문 truncate (Gemini 입력 축소)
 QUALITY_FLOOR = 0.4
 ITINERARY_MIN_GUARANTEE = {
-    "일정/동선": 4,
-    "음식/맛집": 3,
-    "관광/체험": 3,
-    "숙소": 2,
-    "교통/이동": 2,
+    "일정/동선": 8,
+    "음식/맛집": 6,
+    "관광/체험": 6,
+    "숙소": 4,
+    "교통/이동": 3,
 }
 
 CITY_ALIASES = {
@@ -1028,7 +1028,7 @@ def postprocess_place_detail(
     place_name = pd.get("name") or ""
     if itinerary:
         min_reviews = 1
-        max_reviews = 2
+        max_reviews = 3
     else:
         min_reviews = 1 if _is_attraction_name(place_name) else 2
         max_reviews = 3
