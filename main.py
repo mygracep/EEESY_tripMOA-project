@@ -564,7 +564,12 @@ def clean_review_text(text: str, max_len: int = 500) -> str:
     if NUMBERED_FIELD_RE.search(t):
         return ""
 
-    if t.startswith("제목"):
+    # "제목: ..." 헤더만 있으면 그 부분만 제거하고 본문은 살림
+    m = TITLE_PREFIX_RE.match(t)
+    if m:
+        t = t[m.end():].strip()
+
+    if not t:
         return ""
 
     if len(t) > max_len:
