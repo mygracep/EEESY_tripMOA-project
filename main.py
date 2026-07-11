@@ -77,10 +77,10 @@ class SectionStreamExtractor:
         self.in_content_value = False
         self.content_buf = ""
 
-    def feed(self, new_text: str) -> tuple[list[tuple[int, dict]], list[dict]]:
-        """반환: (완성된 (index, section) 리스트, content 델타 리스트)"""
+    def feed(self, new_text: str) -> tuple[list[dict], list[dict]]:
+        """반환: (완성된 section 리스트, content 델타 리스트)"""
         self.buffer += new_text
-        item_results: list[tuple[int, dict]] = []
+        item_results: list[dict] = []
         delta_results: list[dict] = []
         if self.done:
             return item_results, delta_results
@@ -158,9 +158,8 @@ class SectionStreamExtractor:
                 i += 1
                 if self.depth == 0 and self.item_start is not None:
                     raw = buf[self.item_start:i]
-                    completed_index = self.item_index
                     try:
-                        item_results.append((completed_index, json.loads(raw)))
+                        item_results.append(json.loads(raw))
                     except Exception:
                         pass
                     self.item_start = None
@@ -2288,14 +2287,20 @@ async def stream_search_response(
         new_sections, deltas = extractor.feed(piece)
 
         for d in deltas:
+            print(f"[delta] index={d['index']}", flush=True, file=sys.stderr)
             yield f"event: content_delta\ndata: {json.dumps(d, ensure_ascii=False)}\n\n"
 
-        for index, sec in new_sections:
+        for sec in new_sections:
             processed = process_single_section(
                 sec, chunks, prioritize_non_ad, itinerary_query
             )
-            payload = {"index": index, **processed}
-            yield f"event: section\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            idx = extractor.item_index
+            print(
+                f"[section] index={idx} name={processed.get('title')}",
+                flush=True,
+                file=sys.stderr,
+            )
+            yield f"event: section\ndata: {json.dumps({'index': idx, **processed}, ensure_ascii=False)}\n\n"
 
     print(f"[timing] Gemini LLM(stream): {time.monotonic() - llm_t0:.1f}s", flush=True, file=sys.stderr)
 
