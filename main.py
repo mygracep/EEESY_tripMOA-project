@@ -57,12 +57,11 @@ def is_city_relevant(chunk: dict, city: str | None) -> bool:
 
 
 _SECTIONS_KEY_RE = re.compile(r'"sections"\s*:\s*\[')
+_CONTENT_KEY_TAIL_RE = re.compile(r'"content"\s*:\s*"$')
 
 
 class SectionStreamExtractor:
-    """Gemini 스트리밍 응답에서 'sections' 배열의 완성된 원소를 실시간으로 뽑아낸다.
-    프롬프트/스키마는 그대로 — 파싱 방식만 스트리밍 대응.
-    """
+    """Gemini 스트리밍 응답에서 sections 배열의 완성 원소와 content 델타를 실시간 추출."""
 
     def __init__(self):
         self.buffer = ""
@@ -74,16 +73,22 @@ class SectionStreamExtractor:
         self.item_start: int | None = None
         self.done = False
 
-    def feed(self, new_text: str) -> list[dict]:
+        self.item_index = -1
+        self.in_content_value = False
+        self.content_buf = ""
+
+    def feed(self, new_text: str) -> tuple[list[tuple[int, dict]], list[dict]]:
+        """반환: (완성된 (index, section) 리스트, content 델타 리스트)"""
         self.buffer += new_text
-        results: list[dict] = []
+        item_results: list[tuple[int, dict]] = []
+        delta_results: list[dict] = []
         if self.done:
-            return results
+            return item_results, delta_results
 
         if self.array_start is None:
             m = _SECTIONS_KEY_RE.search(self.buffer)
             if not m:
-                return results
+                return item_results, delta_results
             self.array_start = m.end()
             self.scan_pos = self.array_start
 
@@ -92,7 +97,37 @@ class SectionStreamExtractor:
         n = len(buf)
         while i < n:
             c = buf[i]
+
             if self.in_string:
+                if self.in_content_value:
+                    if self.escape:
+                        mapping = {"n": "\n", "t": "\t", '"': '"', "\\": "\\", "/": "/"}
+                        decoded = mapping.get(c, c)
+                        self.content_buf += decoded
+                        self.escape = False
+                        i += 1
+                        delta_results.append({
+                            "index": self.item_index,
+                            "text": self.content_buf,
+                        })
+                        continue
+                    if c == "\\":
+                        self.escape = True
+                        i += 1
+                        continue
+                    if c == '"':
+                        self.in_string = False
+                        self.in_content_value = False
+                        i += 1
+                        continue
+                    self.content_buf += c
+                    i += 1
+                    delta_results.append({
+                        "index": self.item_index,
+                        "text": self.content_buf,
+                    })
+                    continue
+
                 if self.escape:
                     self.escape = False
                 elif c == "\\":
@@ -104,11 +139,17 @@ class SectionStreamExtractor:
 
             if c == '"':
                 self.in_string = True
+                tail = buf[max(0, i - 12):i + 1]
+                if _CONTENT_KEY_TAIL_RE.search(tail):
+                    self.in_content_value = True
+                    self.content_buf = ""
                 i += 1
                 continue
+
             if c in "{[":
                 if self.item_start is None and c == "{":
                     self.item_start = i
+                    self.item_index += 1
                 self.depth += 1
                 i += 1
                 continue
@@ -117,8 +158,9 @@ class SectionStreamExtractor:
                 i += 1
                 if self.depth == 0 and self.item_start is not None:
                     raw = buf[self.item_start:i]
+                    completed_index = self.item_index
                     try:
-                        results.append(json.loads(raw))
+                        item_results.append((completed_index, json.loads(raw)))
                     except Exception:
                         pass
                     self.item_start = None
@@ -126,12 +168,12 @@ class SectionStreamExtractor:
                 if self.depth < 0:
                     self.done = True
                     self.scan_pos = i
-                    return results
+                    return item_results, delta_results
                 continue
             i += 1
 
         self.scan_pos = i
-        return results
+        return item_results, delta_results
 
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -2243,12 +2285,17 @@ async def stream_search_response(
         if not piece:
             continue
         full_text_parts.append(piece)
-        new_sections = extractor.feed(piece)
-        for sec in new_sections:
+        new_sections, deltas = extractor.feed(piece)
+
+        for d in deltas:
+            yield f"event: content_delta\ndata: {json.dumps(d, ensure_ascii=False)}\n\n"
+
+        for index, sec in new_sections:
             processed = process_single_section(
                 sec, chunks, prioritize_non_ad, itinerary_query
             )
-            yield f"event: section\ndata: {json.dumps(processed, ensure_ascii=False)}\n\n"
+            payload = {"index": index, **processed}
+            yield f"event: section\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     print(f"[timing] Gemini LLM(stream): {time.monotonic() - llm_t0:.1f}s", flush=True, file=sys.stderr)
 
