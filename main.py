@@ -1357,6 +1357,14 @@ def process_single_section(
             section["content"] = split_inline_place_blocks(content)
     enrich_place_warnings(wrapper, chunks, prioritize_non_ad, itinerary=itinerary_query)
     rank_and_trim_places_detail(wrapper, chunks, max_per_section=3)
+
+    for pd in wrapper["sections"][0].get("places_detail", []):
+        print(
+            f"[진단] place={pd.get('name')!r} reviews={len(pd.get('reviews', []))}개",
+            flush=True,
+            file=sys.stderr,
+        )
+
     return wrapper["sections"][0]
 
 
