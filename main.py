@@ -1273,6 +1273,10 @@ def postprocess_place_detail(
 
     ref_ids = [r.get("ref") for r in pd["reviews"] if r.get("ref") is not None]
     pd["_category"] = _majority_category(chunks, ref_ids)
+    print(
+        f"[사진후보진단] place={pd.get('name')!r} _category={pd['_category']!r} ref_ids={ref_ids}",
+        flush=True, file=sys.stderr,
+    )
 
     raw_warnings = pd.get("warnings") or []
     description = pd.get("description") or ""
