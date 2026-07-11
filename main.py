@@ -11,8 +11,9 @@ import asyncio
 import sys
 from dotenv import load_dotenv
 from fastapi import FastAPI, Response
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from supabase import create_client
 from google import genai
 import uvicorn
@@ -30,11 +31,13 @@ FETCH_PLACE_REVIEWS_ENABLED = False  # 임시 — 새 RPC로도 충분한지 테
 MAX_TOTAL_CHUNKS = 30
 CONTEXT_CHUNK_MAX_CHARS = 800  # 청크 본문 truncate (Gemini 입력 축소)
 QUALITY_FLOOR = 0.4
+LLM_PARSE_FAILURE_SUMMARY = (
+    "죄송해요, 답변을 만드는 중 문제가 생겼어요. 다시 검색해주시겠어요?"
+)
 ITINERARY_MIN_GUARANTEE = {
     "일정/동선": 8,
     "음식/맛집": 6,
     "관광/체험": 6,
-    "숙소": 4,
     "교통/이동": 3,
 }
 
@@ -52,8 +55,110 @@ def is_city_relevant(chunk: dict, city: str | None) -> bool:
     text = f"{chunk.get('title','')} {chunk.get('text','')}"
     return any(a in text for a in aliases)
 
+
+_SECTIONS_KEY_RE = re.compile(r'"sections"\s*:\s*\[')
+
+
+class SectionStreamExtractor:
+    """Gemini 스트리밍 응답에서 'sections' 배열의 완성된 원소를 실시간으로 뽑아낸다.
+    프롬프트/스키마는 그대로 — 파싱 방식만 스트리밍 대응.
+    """
+
+    def __init__(self):
+        self.buffer = ""
+        self.array_start: int | None = None
+        self.scan_pos: int | None = None
+        self.depth = 0
+        self.in_string = False
+        self.escape = False
+        self.item_start: int | None = None
+        self.done = False
+
+    def feed(self, new_text: str) -> list[dict]:
+        self.buffer += new_text
+        results: list[dict] = []
+        if self.done:
+            return results
+
+        if self.array_start is None:
+            m = _SECTIONS_KEY_RE.search(self.buffer)
+            if not m:
+                return results
+            self.array_start = m.end()
+            self.scan_pos = self.array_start
+
+        i = self.scan_pos
+        buf = self.buffer
+        n = len(buf)
+        while i < n:
+            c = buf[i]
+            if self.in_string:
+                if self.escape:
+                    self.escape = False
+                elif c == "\\":
+                    self.escape = True
+                elif c == '"':
+                    self.in_string = False
+                i += 1
+                continue
+
+            if c == '"':
+                self.in_string = True
+                i += 1
+                continue
+            if c in "{[":
+                if self.item_start is None and c == "{":
+                    self.item_start = i
+                self.depth += 1
+                i += 1
+                continue
+            if c in "}]":
+                self.depth -= 1
+                i += 1
+                if self.depth == 0 and self.item_start is not None:
+                    raw = buf[self.item_start:i]
+                    try:
+                        results.append(json.loads(raw))
+                    except Exception:
+                        pass
+                    self.item_start = None
+                    continue
+                if self.depth < 0:
+                    self.done = True
+                    self.scan_pos = i
+                    return results
+                continue
+            i += 1
+
+        self.scan_pos = i
+        return results
+
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def fire_and_forget(coro) -> asyncio.Task:
+    """create_task 참조 유지 — GC로 insert task가 사라지는 버그 방지."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+def _insert_search_log_row(row: dict) -> None:
+    try:
+        supabase.table("search_logs").insert(row).execute()
+        print(
+            f"[search_logs] 저장 완료 search_id={row.get('search_id')}",
+            flush=True,
+            file=sys.stderr,
+        )
+    except Exception as e:
+        print(f"search_logs 저장 실패: {e}", flush=True, file=sys.stderr)
+
 
 app = FastAPI()
 
@@ -194,15 +299,15 @@ JSON 외 다른 텍스트는 절대 출력금지.
   **장소명 줄(이모지+**장소명**)에는 [ref:N] 절대 금지.** [ref:N]은 이동/설명 줄에만.
   **같은 Day에서 동일 **장소명** 반복 금지.** 재방문·이동은 첫 블록 설명 줄에 합칠 것 (🚆 렌터카 반납 후 출국, 약 30분).
   Day 내부에 숫자 나열(1)2)3))·- 불릿·• 금지. 줄바꿈으로만 구분.
-- Day 섹션 content에 🏨 숙소 넣지 말 것. 숙소는 별도 섹션으로 분리.
-- Day 섹션 다음·여행 팁 직전에 icon "🏨", title "숙소 추천" (title에 🏨 이모지 중복 금지, icon만 사용).
+- Day 섹션 content에 🏨 숙소 넣지 말 것.
+- 숙소 추천 섹션 자체를 생성하지 말 것 (일정형 답변에서 숙소는 다루지 않음).
 - Day에는 🍜 맛집·⛩️ 관광·🚆 이동 포함 가능.
 - **Day(섹션)당 places_detail은 최대 3개.** 언급된 장소가 3개보다 많으면,
   참고 후기에서 해당 장소의 실경험 리뷰가 2개 이상 확보되는 장소를 우선 선정. 1개뿐이어도 places_detail 가능.
 - 리뷰가 **아예 없는** 장소만 places_detail을 생략하고 content에 이름만 언급.
 - 정말 인기 명소라 후기 자체가 없는 경우가 아니면, 리뷰 부족을 이유로 장소 자체를
   일정에서 빼지는 말 것 — 리뷰만 생략하고 이름은 유지.
-- places_detail: 선정된 장소(위 기준)마다 항목 작성. Day당 최대 3개. 숙소 섹션은 places_detail 필수.
+- places_detail: 선정된 장소(위 기준)마다 항목 작성. Day당 최대 3개.
   reviews 2개를 우선 목표로 하되, 참고 후기에 관련 리뷰가 1개뿐이면 1개만 넣을 것. warnings negative 기반.
   - **reviews는 2개를 시도하고, 관련 리뷰가 1개뿐이면 1개로 충분함. 절대 3개 이상은 넣지 말 것.**
   - 리뷰가 아예 없는 장소는 앞선 규칙대로 places_detail 자체를 생략(이름만 content 유지).
@@ -615,7 +720,6 @@ ITINERARY_QUOTAS = {
     "일정/동선": 8,
     "음식/맛집": 6,
     "관광/체험": 6,
-    "숙소": 4,
     "교통/이동": 3,
     "준비/쇼핑": 3,
 }
@@ -623,6 +727,11 @@ ITINERARY_QUOTAS = {
 ITINERARY_CATEGORY_THRESHOLD_OVERRIDE = {
     "교통/이동": 0.55,
 }
+
+
+def ef_search_for_count(match_count: int) -> int:
+    """HNSW ef_search — match_count 대비 recall·속도 균형."""
+    return max(40, match_count * 2)
 
 
 def build_retrieval_plan(
@@ -639,15 +748,26 @@ def build_retrieval_plan(
                 "match_threshold": ITINERARY_CATEGORY_THRESHOLD_OVERRIDE.get(
                     cat, req.match_threshold
                 ),
+                "ef_search": ef_search_for_count(count),
             }
             for cat, count in ITINERARY_QUOTAS.items()
         ]
 
     if detail_query:
-        return [{"filter_category": req.category, "match_count": 5, "match_threshold": req.match_threshold}]
+        return [{
+            "filter_category": req.category,
+            "match_count": 5,
+            "match_threshold": req.match_threshold,
+            "ef_search": ef_search_for_count(5),
+        }]
 
     # 추천형(기본): 단일 카테고리, 넉넉히
-    return [{"filter_category": req.category, "match_count": 20, "match_threshold": req.match_threshold}]
+    return [{
+        "filter_category": req.category,
+        "match_count": 20,
+        "match_threshold": req.match_threshold,
+        "ef_search": ef_search_for_count(20),
+    }]
 
 
 async def fetch_place_reviews(
@@ -1180,6 +1300,25 @@ def rank_and_trim_places_detail(
         section["places_detail"] = kept
 
 
+def process_single_section(
+    section: dict,
+    chunks: list,
+    prioritize_non_ad: bool,
+    itinerary_query: bool,
+) -> dict:
+    """스트리밍으로 받은 섹션 1개에 기존 후처리를 그대로 적용."""
+    wrapper = {"sections": [section]}
+    if itinerary_query:
+        normalize_itinerary_response(wrapper, chunks, prioritize_non_ad)
+    else:
+        content = section.get("content")
+        if content:
+            section["content"] = split_inline_place_blocks(content)
+    enrich_place_warnings(wrapper, chunks, prioritize_non_ad, itinerary=itinerary_query)
+    rank_and_trim_places_detail(wrapper, chunks, max_per_section=3)
+    return wrapper["sections"][0]
+
+
 ITINERARY_KEYWORDS_RE = re.compile(r"일정|코스|동선|루트|여행\s*계획|당일치기|하루\s*코스")
 DURATION_RE = re.compile(r"\d+\s*박\s*\d+\s*일|\d+박\d+일|\d+일\s*여행")
 TRIP_DURATION_RE = re.compile(r"(\d+)\s*박\s*(\d+)\s*일")
@@ -1198,7 +1337,7 @@ ITINERARY_MODE_BLOCK = """
 출력 전 자가검증:
 □ Day 섹션 title "DAY1 — 소제목", icon "" (이모지 없음)
 □ Day content: 실제 **장소명**만. 카테고리 줄·동일 장소명 중복 금지. 이동 줄에 약 N분/N시간 필수
-□ Day에 🏨 숙소 없음 → icon 🏨 + title "숙소 추천" 섹션 별도 (places_detail 필수)
+□ 숙소 추천 섹션 생성 금지 — 이 서비스는 일정형에서 숙소를 다루지 않음
 □ Day(섹션)당 places_detail 최대 3개, 리뷰 2개 이상 확보 가능한 장소 우선 선별
 □ 리뷰가 아예 없는 장소만 places_detail 생략(이름만 content 유지), 억지로 채우지 않음
 □ 각 Day: 선정된 places_detail마다 reviews(2개 우선·1개 허용·최대 2) + warnings
@@ -1983,6 +2122,299 @@ async def photo_proxy(photo_name: str, maxWidthPx: int = 800):
     )
 
 
+def _resolve_chunk_title(chunk: dict) -> str:
+    return (chunk.get("title") or "").strip() or "네이버 블로그 후기"
+
+
+def _attach_sources_to_result(result: dict, chunks: list[dict]) -> None:
+    """본문 [ref:N] ↔ sources 동기화 — /search 완료 경로와 동일."""
+    all_cited_refs = collect_cited_ref_ids(result)
+    strip_refs_from_tip_sections(result)
+
+    def chunk_to_source(ref_id: int, chunk: dict, title: str) -> dict:
+        link = chunk.get("link", "")
+        channel = "네이버 블로그" if "blog.naver.com" in link else "네이버 카페"
+        text = chunk.get("text", "") or ""
+        return {
+            "id": ref_id,
+            "title": title,
+            "channel": channel,
+            "date": chunk.get("date", ""),
+            "link": link,
+            "text_preview": text[:1200],
+            "is_ad": chunk.get("is_ad", False),
+        }
+
+    sources_by_id: dict[int, dict] = {}
+    for source in result.get("sources", []):
+        try:
+            sid = int(source.get("id"))
+        except (TypeError, ValueError):
+            continue
+        sources_by_id[sid] = source
+
+    for ref_id in all_cited_refs:
+        if ref_id < 1 or ref_id > len(chunks):
+            continue
+        if ref_id in sources_by_id:
+            continue
+        chunk = chunks[ref_id - 1]
+        sources_by_id[ref_id] = chunk_to_source(
+            ref_id,
+            chunk,
+            _resolve_chunk_title(chunk),
+        )
+
+    if sources_by_id:
+        result["sources"] = sorted(sources_by_id.values(), key=lambda s: int(s["id"]))
+    elif result.get("sources") is None:
+        result["sources"] = []
+
+    if result.get("sources"):
+        seen_links = set()
+        unique_sources = []
+        for source in result["sources"]:
+            link = source.get("link")
+            if link and link in seen_links:
+                continue
+            if link:
+                seen_links.add(link)
+            unique_sources.append(source)
+        result["sources"] = unique_sources
+
+        for source in result["sources"]:
+            ref_id = source.get("id")
+            if ref_id is not None:
+                try:
+                    ref_id = int(ref_id)
+                except (TypeError, ValueError):
+                    ref_id = None
+
+            link = source.get("link")
+            chunk_for_ref = (
+                chunks[ref_id - 1]
+                if isinstance(ref_id, int) and 1 <= ref_id <= len(chunks)
+                else None
+            )
+            if chunk_for_ref:
+                source["text_preview"] = (chunk_for_ref.get("text") or "")[:1200]
+                source["is_ad"] = bool(chunk_for_ref.get("is_ad"))
+                source["title"] = _resolve_chunk_title(chunk_for_ref)
+
+            if link and "blog.naver.com" in link and "m.blog.naver.com" not in link:
+                source["link"] = link.replace(
+                    "https://blog.naver.com", "https://m.blog.naver.com"
+                )
+
+
+async def stream_search_response(
+    req: "SearchRequest",
+    chunks: list[dict],
+    system_prompt: str,
+    context: str,
+    itinerary_query: bool,
+    prioritize_non_ad: bool,
+    detail_query: bool,
+    *,
+    youtube_videos: list,
+    search_id: str,
+    query_vector: list,
+    embed_t0: float,
+    non_ad_count: int,
+    ad_count: int,
+    qna_filtered_count: int,
+    fallback_used: bool,
+):
+    extractor = SectionStreamExtractor()
+    full_text_parts: list[str] = []
+
+    llm_t0 = time.monotonic()
+    stream = await gemini_client.aio.models.generate_content_stream(
+        model="gemini-2.5-flash",
+        contents=f"{system_prompt}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
+        config={
+            "thinking_config": {"thinking_budget": 0},
+            "response_mime_type": "application/json",
+        },
+    )
+
+    async for chunk in stream:
+        piece = chunk.text or ""
+        if not piece:
+            continue
+        full_text_parts.append(piece)
+        new_sections = extractor.feed(piece)
+        for sec in new_sections:
+            processed = process_single_section(
+                sec, chunks, prioritize_non_ad, itinerary_query
+            )
+            yield f"event: section\ndata: {json.dumps(processed, ensure_ascii=False)}\n\n"
+
+    print(f"[timing] Gemini LLM(stream): {time.monotonic() - llm_t0:.1f}s", flush=True, file=sys.stderr)
+
+    full_text = "".join(full_text_parts).strip()
+    try:
+        if full_text.startswith("```"):
+            full_text = full_text.split("```")[1]
+            if full_text.startswith("json"):
+                full_text = full_text[4:]
+        final_result = json.loads(full_text)
+    except Exception as e:
+        print(f"JSON 파싱 실패: {e}", flush=True, file=sys.stderr)
+        print(f"응답 텍스트: {full_text[:500]}", flush=True, file=sys.stderr)
+        final_result = {
+            "summary": LLM_PARSE_FAILURE_SUMMARY,
+            "sections": [],
+            "warning": [],
+            "follow_up": [],
+            "sources": [],
+        }
+
+    print(f"\n=== LLM 응답 (stream) ===", flush=True, file=sys.stderr)
+    for section in final_result.get("sections", []):
+        pd_names = [pd.get("name") for pd in section.get("places_detail", [])]
+        content_places = re.findall(r"\*\*(.+?)\*\*", section.get("content", ""))
+        print(
+            f"[{section.get('title')}] content장소={content_places} | places_detail={pd_names}",
+            flush=True, file=sys.stderr,
+        )
+
+    if itinerary_query:
+        normalize_itinerary_response(final_result, chunks, prioritize_non_ad)
+    else:
+        for section in final_result.get("sections", []):
+            content = section.get("content")
+            if content:
+                section["content"] = split_inline_place_blocks(content)
+
+    enrich_place_warnings(
+        final_result, chunks, prioritize_non_ad, itinerary=itinerary_query
+    )
+    await extend_result_reviews(final_result, chunks)
+    rank_and_trim_places_detail(final_result, chunks, max_per_section=3)
+
+    all_places_detail = [
+        pd for section in final_result.get("sections", [])
+        for pd in section.get("places_detail", [])
+    ]
+    places_detail_count = len(all_places_detail)
+    avg_reviews_per_place = (
+        sum(len(pd.get("reviews", [])) for pd in all_places_detail) / places_detail_count
+        if places_detail_count else 0
+    )
+
+    final_result["places"] = None
+    _attach_sources_to_result(final_result, chunks)
+    final_result["youtube_videos"] = [
+        format_youtube_item(v)
+        for v in youtube_videos
+        if (v.get("url") or "").strip()
+    ]
+    final_result["map_title"] = extract_map_title(req.query, req.city)
+
+    if final_result.get("summary"):
+        final_result["summary"] = INLINE_REF_RE.sub(
+            " ", str(final_result["summary"])
+        ).strip()
+
+    renumber_source_refs(final_result)
+
+    for section in final_result.get("sections", []):
+        for pd in section.get("places_detail", []):
+            print(
+                f"[최종리뷰] {pd.get('name')!r} reviews={len(pd.get('reviews', []))}개",
+                flush=True, file=sys.stderr,
+            )
+
+    def _insert_search_log():
+        _insert_search_log_row({
+            "query": req.query,
+            "city": req.city,
+            "category": req.category,
+            "travel_style": req.travel_style,
+            "chunk_count": len(chunks),
+            "had_result": bool(chunks),
+            "cache_hit": False,
+            "non_ad_count": non_ad_count,
+            "ad_count": ad_count,
+            "qna_filtered_count": qna_filtered_count,
+            "fallback_used": fallback_used,
+            "places_detail_count": places_detail_count,
+            "avg_reviews_per_place": round(avg_reviews_per_place, 2),
+            "search_id": search_id,
+        })
+
+    fire_and_forget(asyncio.to_thread(_insert_search_log))
+
+    footer = {
+        "search_id": search_id,
+        "summary": final_result.get("summary", ""),
+        "warning": final_result.get("warning", []),
+        "follow_up": final_result.get("follow_up", []),
+        "sources": final_result.get("sources", []),
+        "youtube_videos": final_result.get("youtube_videos", []),
+        "map_title": final_result.get("map_title", ""),
+        "places": None,
+    }
+    yield f"event: done\ndata: {json.dumps(footer, ensure_ascii=False)}\n\n"
+
+    place_names = (
+        []
+        if detail_query
+        else (
+            select_itinerary_photo_places(final_result, max_places=3) if itinerary_query
+            else collect_place_names_for_api(final_result, limit=3, itinerary=False)
+        )
+    )
+
+    places: list[dict] = []
+    if PLACES_API_ENABLED and PLACE_PHOTOS_ENABLED and place_names:
+        places_t0 = time.monotonic()
+        tasks = [get_place_details(name, req.city) for name in place_names]
+        details_list = await asyncio.gather(*tasks)
+        for name, details in zip(place_names, details_list):
+            if details:
+                places.append({
+                    "day": None,
+                    "name": name,
+                    "lat": details["lat"],
+                    "lng": details["lng"],
+                    "photo_urls": details["photo_urls"],
+                    "description": "",
+                })
+        print(
+            f"[timing] Places API(stream): {time.monotonic() - places_t0:.1f}s",
+            flush=True, file=sys.stderr,
+        )
+        print(
+            f"[사진] place_names={place_names}, 확보된 places={len(places)}개, "
+            f"사진있음={sum(1 for p in places if p.get('photo_urls'))}개",
+            flush=True, file=sys.stderr,
+        )
+
+    if places:
+        final_result["places"] = places
+        yield f"event: photos\ndata: {json.dumps(places, ensure_ascii=False)}\n\n"
+
+    def _insert_answer_cache():
+        try:
+            supabase.table("answer_cache").insert({
+                "query": req.query,
+                "query_embedding": query_vector,
+                "city": req.city,
+                "category": req.category,
+                "travel_style": req.travel_style,
+                "result": final_result,
+            }).execute()
+        except Exception as e:
+            print(f"answer_cache 저장 실패: {e}", flush=True, file=sys.stderr)
+
+    print(f"[timing] 총 소요: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
+
+    if final_result.get("sections"):
+        fire_and_forget(asyncio.to_thread(_insert_answer_cache))
+
+
 @app.post("/search")
 async def search(req: SearchRequest):
     search_id = str(uuid.uuid4())
@@ -2029,6 +2461,7 @@ async def search(req: SearchRequest):
             return None
 
     async def fetch_plan_call(call: dict) -> list[dict]:
+        call_t0 = time.monotonic()
         res = await asyncio.to_thread(
             lambda: supabase.rpc("match_travel_chunks", {
                 "query_embedding": query_vector,
@@ -2039,11 +2472,14 @@ async def search(req: SearchRequest):
                 "filter_travel_style": req.travel_style,
                 "prioritize_non_ad": prioritize_non_ad,
                 "hard_category": itinerary_query,
+                "ef_search": call["ef_search"],
             }).execute()
         )
+        elapsed = time.monotonic() - call_t0
         call_chunks = res.data or []
         print(
-            f"[검색] category={call['filter_category']!r} 요청={call['match_count']} 확보={len(call_chunks)}",
+            f"[검색] category={call['filter_category']!r} 요청={call['match_count']} "
+            f"확보={len(call_chunks)} ef={call['ef_search']} 소요={elapsed:.2f}s",
             flush=True, file=sys.stderr,
         )
         return call_chunks
@@ -2057,21 +2493,18 @@ async def search(req: SearchRequest):
     print(f"[timing] 임베딩+캐시조회: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
 
     if cached_result:
-        try:
-            await asyncio.to_thread(
-                lambda: supabase.table("search_logs").insert({
-                    "query": req.query,
-                    "city": req.city,
-                    "category": req.category,
-                    "travel_style": req.travel_style,
-                    "chunk_count": None,
-                    "had_result": True,
-                    "cache_hit": True,
-                    "search_id": search_id,
-                }).execute()
-            )
-        except Exception as e:
-            print(f"search_logs 저장 실패(캐시 히트): {e}", flush=True, file=sys.stderr)
+        await asyncio.to_thread(
+            lambda: _insert_search_log_row({
+                "query": req.query,
+                "city": req.city,
+                "category": req.category,
+                "travel_style": req.travel_style,
+                "chunk_count": None,
+                "had_result": True,
+                "cache_hit": True,
+                "search_id": search_id,
+            })
+        )
         strip_refs_from_tip_sections(cached_result)
         await refresh_result_places(cached_result, req.city)
         youtube_task.cancel()
@@ -2090,7 +2523,7 @@ async def search(req: SearchRequest):
     qna_filtered_count = chunks_before_qna - len(chunks)
     print(f"[필터] qna 필터 후: {len(chunks)}개", flush=True, file=sys.stderr)
 
-    if len(chunks) < 5:
+    if 0 < len(chunks) < 5:
         fallback_used = True
         fallback_threshold = max(0.5, req.match_threshold - 0.15)
         print(f"[fallback] threshold {req.match_threshold} → {fallback_threshold}로 재검색", flush=True, file=sys.stderr)
@@ -2200,21 +2633,18 @@ async def search(req: SearchRequest):
     print(f"[timing] 검색+유튜브: {time.monotonic() - search_t0:.1f}s", flush=True, file=sys.stderr)
 
     if not chunks:
-        try:
-            await asyncio.to_thread(
-                lambda: supabase.table("search_logs").insert({
-                    "query": req.query,
-                    "city": req.city,
-                    "category": req.category,
-                    "travel_style": req.travel_style,
-                    "chunk_count": 0,
-                    "had_result": False,
-                    "cache_hit": False,
-                    "search_id": search_id,
-                }).execute()
-            )
-        except Exception as e:
-            print(f"search_logs 저장 실패(결과없음): {e}", flush=True, file=sys.stderr)
+        await asyncio.to_thread(
+            lambda: _insert_search_log_row({
+                "query": req.query,
+                "city": req.city,
+                "category": req.category,
+                "travel_style": req.travel_style,
+                "chunk_count": 0,
+                "had_result": False,
+                "cache_hit": False,
+                "search_id": search_id,
+            })
+        )
         return {
             "search_id": search_id,
             "summary": "관련 후기가 충분하지 않아요.",
@@ -2247,256 +2677,27 @@ async def search(req: SearchRequest):
 
     system_prompt = build_system_prompt(req.query)
 
-    # 4. Gemini 답변 생성
-    llm_t0 = time.monotonic()
-    response = await gemini_client.aio.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=f"{system_prompt}\n\n질문: {req.query}\n\n참고 후기:\n{context}",
-        config={
-            "thinking_config": {"thinking_budget": 0},
-            "response_mime_type": "application/json",
-        }
+    return StreamingResponse(
+        stream_search_response(
+            req,
+            chunks,
+            system_prompt,
+            context,
+            itinerary_query,
+            prioritize_non_ad,
+            detail_query,
+            youtube_videos=youtube_videos,
+            search_id=search_id,
+            query_vector=query_vector,
+            embed_t0=embed_t0,
+            non_ad_count=non_ad_count,
+            ad_count=ad_count,
+            qna_filtered_count=qna_filtered_count,
+            fallback_used=fallback_used,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-    usage = getattr(response, "usage_metadata", None)
-    if usage:
-        print(
-            f"[토큰] 입력={usage.prompt_token_count}, 출력={usage.candidates_token_count}, "
-            f"전체={usage.total_token_count}",
-            flush=True, file=sys.stderr,
-        )
-
-    print(f"[timing] Gemini LLM: {time.monotonic() - llm_t0:.1f}s", flush=True, file=sys.stderr)
-
-    # 5. JSON 파싱
-    try:
-        text = response.text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        result = json.loads(text)
-    except Exception as e:
-        print(f"JSON 파싱 실패: {e}")
-        print(f"응답 텍스트: {response.text[:500]}")
-        result = {
-            "summary": response.text,
-            "sections": [],
-            "warning": [],
-            "places": None,
-            "follow_up": [],
-            "sources": []
-        }
-
-    print(f"\n=== LLM 응답 ===", flush=True, file=sys.stderr)
-    for section in result.get("sections", []):
-        pd_names = [pd.get("name") for pd in section.get("places_detail", [])]
-        content_places = re.findall(r"\*\*(.+?)\*\*", section.get("content", ""))
-        print(
-            f"[{section.get('title')}] content장소={content_places} | places_detail={pd_names}",
-            flush=True, file=sys.stderr,
-        )
-
-    for section in result.get("sections", []):
-        content = section.get("content")
-        if content:
-            section["content"] = split_inline_place_blocks(content)
-
-    if itinerary_query:
-        normalize_itinerary_response(result, chunks, prioritize_non_ad)
-    enrich_place_warnings(result, chunks, prioritize_non_ad, itinerary=itinerary_query)
-    post_t0 = time.monotonic()
-    await extend_result_reviews(result, chunks)
-    rank_and_trim_places_detail(result, chunks, max_per_section=3)
-    print(f"[timing] 후처리: {time.monotonic() - post_t0:.1f}s", flush=True, file=sys.stderr)
-
-    all_places_detail = [
-        pd for section in result.get("sections", [])
-        for pd in section.get("places_detail", [])
-    ]
-    places_detail_count = len(all_places_detail)
-    avg_reviews_per_place = (
-        sum(len(pd.get("reviews", [])) for pd in all_places_detail) / places_detail_count
-        if places_detail_count else 0
-    )
-
-    # 6. content·places_detail 장소명 → Places API (일정형: Day당 1곳, 최대 3곳)
-    place_names = (
-        []
-        if detail_query
-        else (
-            select_itinerary_photo_places(result, max_places=3) if itinerary_query
-            else collect_place_names_for_api(result, limit=3, itinerary=False)
-        )
-    )
-
-    places = []
-    places_t0 = time.monotonic()
-    if PLACES_API_ENABLED and place_names:
-        tasks = [get_place_details(name, req.city) for name in place_names]
-        details_list = await asyncio.gather(*tasks)
-        for name, details in zip(place_names, details_list):
-            if details:
-                places.append({
-                    "day": None,
-                    "name": name,
-                    "lat": details["lat"],
-                    "lng": details["lng"],
-                    "photo_urls": details["photo_urls"],
-                    "description": ""
-                })
-
-    if place_names:
-        print(f"[timing] Places API: {time.monotonic() - places_t0:.1f}s", flush=True, file=sys.stderr)
-    
-    print(
-        f"[사진] place_names={place_names}, 확보된 places={len(places)}개, "
-        f"사진있음={sum(1 for p in places if p.get('photo_urls'))}개",
-        flush=True,
-        file=sys.stderr,
-    )
-    result["places"] = places if places else None
-
-    all_cited_refs = collect_cited_ref_ids(result)
-    strip_refs_from_tip_sections(result)
-
-    def chunk_to_source(ref_id: int, chunk: dict, title: str) -> dict:
-        link = chunk.get("link", "")
-        channel = "네이버 블로그" if "blog.naver.com" in link else "네이버 카페"
-        text = chunk.get("text", "") or ""
-        return {
-            "id": ref_id,
-            "title": title,
-            "channel": channel,
-            "date": chunk.get("date", ""),
-            "link": link,
-            "text_preview": text[:1200],
-            "is_ad": chunk.get("is_ad", False),
-        }
-
-    # 7. 본문 [ref:N] ↔ sources 동기화 + 중복 제거 + 모바일 URL
-    sources_by_id: dict[int, dict] = {}
-
-    for source in result.get("sources", []):
-        try:
-            sid = int(source.get("id"))
-        except (TypeError, ValueError):
-            continue
-        sources_by_id[sid] = source
-
-    for ref_id in all_cited_refs:
-        if ref_id < 1 or ref_id > len(chunks):
-            continue
-        if ref_id in sources_by_id:
-            continue
-        chunk = chunks[ref_id - 1]
-        sources_by_id[ref_id] = chunk_to_source(
-            ref_id,
-            chunk,
-            resolve_chunk_title(chunk),
-        )
-
-    if sources_by_id:
-        result["sources"] = sorted(sources_by_id.values(), key=lambda s: int(s["id"]))
-    elif result.get("sources") is None:
-        result["sources"] = []
-
-    if result.get("sources"):
-        seen_links = set()
-        unique_sources = []
-        for source in result["sources"]:
-            link = source.get("link")
-            if link and link in seen_links:
-                continue
-            if link:
-                seen_links.add(link)
-            unique_sources.append(source)
-        result["sources"] = unique_sources
-
-        for source in result["sources"]:
-            ref_id = source.get("id")
-            if ref_id is not None:
-                try:
-                    ref_id = int(ref_id)
-                except (TypeError, ValueError):
-                    ref_id = None
-
-            link = source.get("link")
-            chunk_for_ref = (
-                chunks[ref_id - 1]
-                if isinstance(ref_id, int) and 1 <= ref_id <= len(chunks)
-                else None
-            )
-            if chunk_for_ref:
-                source["text_preview"] = (chunk_for_ref.get("text") or "")[:1200]
-                source["is_ad"] = bool(chunk_for_ref.get("is_ad"))
-                source["title"] = resolve_chunk_title(chunk_for_ref)
-
-            if link and "blog.naver.com" in link and "m.blog.naver.com" not in link:
-                source["link"] = link.replace("https://blog.naver.com", "https://m.blog.naver.com")
-
-    # 유튜브 링크 추가
-    result["youtube_videos"] = [
-        format_youtube_item(v)
-        for v in youtube_videos
-        if (v.get("url") or "").strip()
-    ]
-
-    result["map_title"] = extract_map_title(req.query, req.city)
-
-    if result.get("summary"):
-        result["summary"] = INLINE_REF_RE.sub(" ", str(result["summary"])).strip()
-
-    renumber_source_refs(result)
-
-    for section in result.get("sections", []):
-        for pd in section.get("places_detail", []):
-            print(
-                f"[최종리뷰] {pd.get('name')!r} reviews={len(pd.get('reviews', []))}개",
-                flush=True, file=sys.stderr,
-            )
-
-    def _insert_search_log():
-        try:
-            supabase.table("search_logs").insert({
-                "query": req.query,
-                "city": req.city,
-                "category": req.category,
-                "travel_style": req.travel_style,
-                "chunk_count": len(chunks),
-                "had_result": bool(chunks),
-                "cache_hit": False,
-                "non_ad_count": non_ad_count,
-                "ad_count": ad_count,
-                "qna_filtered_count": qna_filtered_count,
-                "fallback_used": fallback_used,
-                "places_detail_count": places_detail_count,
-                "avg_reviews_per_place": round(avg_reviews_per_place, 2),
-                "search_id": search_id,
-            }).execute()
-        except Exception as e:
-            print(f"search_logs 저장 실패: {e}", flush=True, file=sys.stderr)
-
-    def _insert_answer_cache():
-        try:
-            supabase.table("answer_cache").insert({
-                "query": req.query,
-                "query_embedding": query_vector,
-                "city": req.city,
-                "category": req.category,
-                "travel_style": req.travel_style,
-                "result": result,
-            }).execute()
-        except Exception as e:
-            print(f"answer_cache 저장 실패: {e}", flush=True, file=sys.stderr)
-
-    print(f"[timing] 총 소요: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
-
-    asyncio.create_task(asyncio.to_thread(_insert_search_log))
-    if result.get("sections"):
-        asyncio.create_task(asyncio.to_thread(_insert_answer_cache))
-
-    result["search_id"] = search_id
-    return result
 
 
 REF_TAG_RE = re.compile(r"\[ref:(\d+)\]")
@@ -2583,8 +2784,8 @@ def renumber_source_refs(result: dict) -> None:
 
 class FeedbackRequest(BaseModel):
     search_id: str
-    rating: int
-    comment: str = None
+    rating: int = Field(ge=1, le=5)
+    comment: str | None = None
 
 
 @app.post("/feedback")
@@ -2597,10 +2798,15 @@ async def submit_feedback(req: FeedbackRequest):
                 "comment": req.comment,
             }).execute()
         )
+        print(
+            f"[feedback] 저장 완료 search_id={req.search_id} rating={req.rating}",
+            flush=True,
+            file=sys.stderr,
+        )
         return {"ok": True}
     except Exception as e:
         print(f"feedback 저장 실패: {e}", flush=True, file=sys.stderr)
-        return {"ok": False}
+        return {"ok": False, "error": str(e)}
 
 
 @app.get("/health")
