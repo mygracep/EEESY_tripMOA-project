@@ -1200,6 +1200,20 @@ async def extend_result_reviews(result: dict, chunks: list) -> None:
         if extended != text:
             review["text"] = extended
 
+def record_photo_call(supabase, key_index: int):
+    current = (
+        supabase.table("api_key_usage")
+        .select("photos_count")
+        .eq("key_index", key_index)
+        .single()
+        .execute()
+        .data["photos_count"]
+    )
+    supabase.table("api_key_usage").update(
+        {"photos_count": current + 1}
+    ).eq("key_index", key_index).execute()
+
+
 
 def validate_warning_ref(
     warning: str, place_name: str, description: str, chunks: list | None
