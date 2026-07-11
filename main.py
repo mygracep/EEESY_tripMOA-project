@@ -77,10 +77,12 @@ class SectionStreamExtractor:
         self.in_content_value = False
         self.content_buf = ""
 
-    def feed(self, new_text: str) -> tuple[list[dict], list[dict]]:
-        """반환: (완성된 section 리스트, content 델타 리스트)"""
+    def feed(self, new_text: str) -> tuple[list[tuple[int, dict]], list[dict]]:
+        """반환: (완성된 (index, section) 리스트, content 델타 리스트).
+        section index는 완성 시점에 캡처 — feed 안에서 다음 섹션이 시작돼도 어긋나지 않음.
+        """
         self.buffer += new_text
-        item_results: list[dict] = []
+        item_results: list[tuple[int, dict]] = []
         delta_results: list[dict] = []
         if self.done:
             return item_results, delta_results
@@ -158,8 +160,9 @@ class SectionStreamExtractor:
                 i += 1
                 if self.depth == 0 and self.item_start is not None:
                     raw = buf[self.item_start:i]
+                    completed_index = self.item_index
                     try:
-                        item_results.append(json.loads(raw))
+                        item_results.append((completed_index, json.loads(raw)))
                     except Exception:
                         pass
                     self.item_start = None
@@ -769,10 +772,20 @@ ITINERARY_CATEGORY_THRESHOLD_OVERRIDE = {
     "교통/이동": 0.55,
 }
 
+ITINERARY_CATEGORY_EF_SEARCH = {
+    "교통/이동": 800,
+    "준비/쇼핑": 800,
+    "일정/동선": 200,
+    "음식/맛집": 200,
+    "관광/체험": 200,
+}
 
-def ef_search_for_count(match_count: int) -> int:
-    """HNSW ef_search — match_count 대비 recall·속도 균형."""
-    return max(40, match_count * 2)
+
+def ef_search_for_count(match_count: int, category: str | None = None) -> int:
+    """HNSW ef_search — 카테고리별 확정값 우선, 없으면 count 기반 기본값."""
+    if category in ITINERARY_CATEGORY_EF_SEARCH:
+        return ITINERARY_CATEGORY_EF_SEARCH[category]
+    return max(200, match_count * 2)
 
 
 def build_retrieval_plan(
@@ -789,7 +802,7 @@ def build_retrieval_plan(
                 "match_threshold": ITINERARY_CATEGORY_THRESHOLD_OVERRIDE.get(
                     cat, req.match_threshold
                 ),
-                "ef_search": ef_search_for_count(count),
+                "ef_search": ef_search_for_count(count, cat),
             }
             for cat, count in ITINERARY_QUOTAS.items()
         ]
@@ -799,7 +812,7 @@ def build_retrieval_plan(
             "filter_category": req.category,
             "match_count": 5,
             "match_threshold": req.match_threshold,
-            "ef_search": ef_search_for_count(5),
+            "ef_search": ef_search_for_count(5, req.category),
         }]
 
     # 추천형(기본): 단일 카테고리, 넉넉히
@@ -807,7 +820,7 @@ def build_retrieval_plan(
         "filter_category": req.category,
         "match_count": 20,
         "match_threshold": req.match_threshold,
-        "ef_search": ef_search_for_count(20),
+        "ef_search": ef_search_for_count(20, req.category),
     }]
 
 
@@ -2294,15 +2307,21 @@ async def stream_search_response(
         full_text_parts.append(piece)
         new_sections, deltas = extractor.feed(piece)
 
+        # 글자마다 print 하면 Railway 로그가 폭주함 — 청크당 index 요약만
+        if deltas:
+            delta_indexes = sorted({d["index"] for d in deltas})
+            print(
+                f"[delta] indexes={delta_indexes} chars=+{sum(1 for _ in deltas)}",
+                flush=True,
+                file=sys.stderr,
+            )
         for d in deltas:
-            print(f"[delta] index={d['index']}", flush=True, file=sys.stderr)
             yield f"event: content_delta\ndata: {json.dumps(d, ensure_ascii=False)}\n\n"
 
-        for sec in new_sections:
+        for idx, sec in new_sections:
             processed = process_single_section(
                 sec, chunks, prioritize_non_ad, itinerary_query
             )
-            idx = extractor.item_index
             print(
                 f"[section] index={idx} name={processed.get('title')}",
                 flush=True,
@@ -2553,6 +2572,11 @@ async def search(req: SearchRequest):
     print(f"[timing] 임베딩+캐시조회: {time.monotonic() - embed_t0:.1f}s", flush=True, file=sys.stderr)
 
     if cached_result:
+        print(
+            f"[cache] hit — sections={len(cached_result.get('sections') or [])}",
+            flush=True,
+            file=sys.stderr,
+        )
         await asyncio.to_thread(
             lambda: _insert_search_log_row({
                 "query": req.query,
@@ -2568,6 +2592,7 @@ async def search(req: SearchRequest):
         strip_refs_from_tip_sections(cached_result)
         await refresh_result_places(cached_result, req.city)
         youtube_task.cancel()
+        plan_task.cancel()
         cached_result["search_id"] = search_id
         return cached_result
 
